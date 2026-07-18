@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adaptive-harness.dev/schemas/task-envelope-1.0.schema.json",
+  "title": "Adaptive Harness Task Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "repository_id",
+    "base_sha",
+    "worktree_path",
+    "initial_dirty_state",
+    "harness_version",
+    "config_version",
+    "goal",
+    "non_goals",
+    "requirements",
+    "allowed_scope",
+    "acceptances",
+    "requested_capabilities",
+    "timeout_seconds",
+    "retry_budget",
+    "budget",
+    "integration_mode",
+    "revision"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "task_id": {"$ref": "#/$defs/identifier"},
+    "repository_id": {"$ref": "#/$defs/identifier"},
+    "base_sha": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "worktree_path": {"type": "string", "pattern": "^/"},
+    "initial_dirty_state": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "harness_version": {"type": "string", "minLength": 1},
+    "config_version": {"type": "string", "minLength": 1},
+    "goal": {"type": "string", "minLength": 1},
+    "non_goals": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "allowed_scope": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "acceptances": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/acceptance"}
+    },
+    "requested_capabilities": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/identifier"},
+      "uniqueItems": true
+    },
+    "timeout_seconds": {"type": "integer", "minimum": 1},
+    "retry_budget": {"type": "integer", "minimum": 0},
+    "budget": {
+      "type": "object",
+      "propertyNames": {"minLength": 1},
+      "properties": {
+        "max_commands": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": {"type": "number", "minimum": 0}
+    },
+    "integration_mode": {"enum": ["observe", "enforced"]},
+    "revision": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "required",
+        "covers",
+        "command_id",
+        "expected",
+        "timeout_seconds",
+        "retry_budget",
+        "evidence_type"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "required": {"type": "boolean"},
+        "covers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true
+        },
+        "command_id": {"$ref": "#/$defs/identifier"},
+        "expected": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exit_code"],
+          "properties": {"exit_code": {"type": "integer"}}
+        },
+        "timeout_seconds": {"type": "integer", "minimum": 1},
+        "retry_budget": {"type": "integer", "minimum": 0},
+        "evidence_type": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

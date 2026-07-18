@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adaptive-harness.dev/schemas/config-1.0.schema.json",
+  "title": "Adaptive Harness Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_version",
+    "project_profile",
+    "model_profile",
+    "adapter",
+    "policy",
+    "modules",
+    "feedback",
+    "managed_projections"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "runtime_version": {"type": "string", "minLength": 1},
+    "project_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "fingerprint"],
+      "properties": {
+        "strategy": {"const": "deterministic-local"},
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "model_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode"],
+      "properties": {
+        "id": {"enum": ["generic", "codex", "claude-code"]},
+        "mode": {"enum": ["observe", "enforced"]}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown_operations", "telemetry_enabled"],
+      "properties": {
+        "unknown_operations": {"const": "deny_or_approve"},
+        "telemetry_enabled": {"const": false}
+      }
+    },
+    "modules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activation_policy", "context_budget_tokens"],
+      "properties": {
+        "activation_policy": {"enum": ["auto", "suggest", "manual", "disabled"]},
+        "context_budget_tokens": {"type": "integer", "minimum": 0}
+      }
+    },
+    "feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "analysis_policy", "include_token_usage", "retention_days"],
+      "properties": {
+        "mode": {"enum": ["off", "minimal", "research"]},
+        "analysis_policy": {"enum": ["on_demand", "scheduled", "after_each_task"]},
+        "include_token_usage": {"type": "boolean"},
+        "retention_days": {"type": "integer", "minimum": 0}
+      }
+    },
+    "managed_projections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "version", "content_sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "version": {"type": "string", "minLength": 1},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

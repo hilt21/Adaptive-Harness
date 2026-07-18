@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-harness"
+version = "0.1.0"
+description = "Local-first governance runtime for software development agents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Adaptive Harness contributors" }]
+dependencies = ["jsonschema>=4.23,<5"]
+
+[project.scripts]
+harness = "adaptive_harness.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+adaptive_harness = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "--cov=adaptive_harness",
+  "--cov-report=term-missing",
+  "--cov-fail-under=80",
+]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.16,<2",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.12,<1",
+  "types-jsonschema>=4.23,<5",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["adaptive_harness"]
+mypy_path = "src"
