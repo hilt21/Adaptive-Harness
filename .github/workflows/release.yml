@@ -141,7 +141,7 @@ jobs:
           find release -name '*.sha256' -type f -exec cat {} + | sort -k2 > release/SHA256SUMS
           find release -name '*.sha256' -type f -delete
           cp scripts/install.sh release/install.sh
-          sha256sum release/install.sh >> release/SHA256SUMS
+          (cd release && sha256sum install.sh >> SHA256SUMS)
       - name: Attest release subjects
         uses: actions/attest@v4
         with:

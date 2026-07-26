@@ -273,6 +273,27 @@ def test_sandbox_preflight_failure_does_not_poison_execution_retry(
     assert executor.execute(authorization).status == "succeeded"
 
 
+def test_linux_sandbox_mounts_private_procfs_after_root_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".git").mkdir()
+    capability = make_capability((sys.executable, "-c", "pass"))
+    _, gateway, _, _ = prepare_execution(tmp_path, capability)
+    authorization = gateway.authorize("task-001", capability.id)
+    monkeypatch.setattr("adaptive_harness.core.executor.sys.platform", "linux")
+    monkeypatch.setattr(
+        "adaptive_harness.core.executor.shutil.which", lambda _: "/usr/bin/bwrap"
+    )
+
+    sandbox_temp = tmp_path / "sandbox-temp"
+    sandbox_temp.mkdir()
+    command = executor_module._sandbox_command(authorization, sandbox_temp)
+
+    assert _contains_sequence(
+        command, ("--ro-bind", "/", "/", "--proc", "/proc")
+    )
+
+
 def test_linux_sandbox_rebinds_tmp_worktree_after_private_tmpfs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -532,6 +532,8 @@ def _sandbox_command(
             "--ro-bind",
             "/",
             "/",
+            "--proc",
+            "/proc",
             "--tmpfs",
             "/tmp",
             "--bind",

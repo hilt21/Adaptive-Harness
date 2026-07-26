@@ -720,6 +720,8 @@ def test_release_pipeline_covers_supported_targets_and_attests_checksums() -> No
     assert "actions/attest@v4" in workflow
     assert "subject-checksums: release/SHA256SUMS" in workflow
     assert "scripts/install.sh" in workflow
+    assert "(cd release && sha256sum install.sh >> SHA256SUMS)" in workflow
+    assert "sha256sum release/install.sh >> release/SHA256SUMS" not in workflow
     assert "--onedir" in workflow
     assert "--onefile" not in workflow
     assert "quality-gate:" in workflow
