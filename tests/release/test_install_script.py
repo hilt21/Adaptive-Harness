@@ -707,6 +707,87 @@ def test_release_packager_enforces_semver_2(
     assert (completed.returncode == 0) is valid
 
 
+
+def test_release_packager_materializes_internal_symlinks(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    binary = bundle / "harness"
+    binary.write_bytes(b"standalone-binary")
+    binary.chmod(0o755)
+    target = bundle / "_internal/Python.framework/Versions/3.12/Python"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"framework-python")
+    target.chmod(0o755)
+    current = bundle / "_internal/Python.framework/Versions/Current"
+    current.symlink_to("3.12", target_is_directory=True)
+    output = tmp_path / "release"
+
+    completed = subprocess.run(
+        (
+            sys.executable,
+            str(PACKAGER),
+            "--bundle",
+            str(bundle),
+            "--version",
+            "0.1.0",
+            "--target",
+            "macos-arm64",
+            "--output",
+            str(output),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    archive = output / "adaptive-harness-v0.1.0-macos-arm64.tar.gz"
+    with tarfile.open(archive, "r:gz") as archive_bundle:
+        member = archive_bundle.getmember(
+            "runtime/_internal/Python.framework/Versions/Current/Python"
+        )
+        assert member.isfile()
+        assert not member.issym()
+        extracted = archive_bundle.extractfile(member)
+        assert extracted is not None
+        assert extracted.read() == b"framework-python"
+        assert member.mode == 0o755
+
+
+def test_release_packager_rejects_external_symlinks(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    binary = bundle / "harness"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    (bundle / "escape").symlink_to(outside)
+
+    completed = subprocess.run(
+        (
+            sys.executable,
+            str(PACKAGER),
+            "--bundle",
+            str(bundle),
+            "--version",
+            "0.1.0",
+            "--target",
+            "macos-arm64",
+            "--output",
+            str(tmp_path / "release"),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "escapes the bundle root" in completed.stderr
+
+
 def test_release_pipeline_covers_supported_targets_and_attests_checksums() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 

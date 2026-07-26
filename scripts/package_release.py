@@ -34,16 +34,54 @@ def main() -> int:
     if arguments.bundle.is_symlink() or not arguments.bundle.is_dir():
         parser.error("--bundle must be a directory, not a symlink")
     bundle_root = arguments.bundle.resolve()
-    files: list[Path] = []
-    for path in sorted(bundle_root.rglob("*")):
+    files: list[tuple[Path, Path]] = []
+    visited_directories: set[Path] = set()
+
+    def collect(path: Path, logical_path: Path) -> None:
         if path.is_symlink():
-            parser.error("--bundle must not contain symlinks")
+            try:
+                resolved = path.resolve()
+            except (OSError, RuntimeError) as error:
+                parser.error(f"--bundle symlink cannot be resolved: {path}: {error}")
+            try:
+                resolved.relative_to(bundle_root)
+            except ValueError:
+                parser.error(
+                    f"--bundle symlink escapes the bundle root: {path}"
+                )
+            if resolved.is_dir():
+                if resolved in visited_directories:
+                    parser.error(f"--bundle symlink loop detected: {path}")
+                visited_directories.add(resolved)
+                for child in sorted(resolved.iterdir()):
+                    collect(child, logical_path / child.name)
+                visited_directories.remove(resolved)
+                return
+            if not resolved.is_file():
+                parser.error(
+                    f"--bundle symlink must target a regular file: {path}"
+                )
+            files.append((logical_path, resolved))
+            return
+        if path.is_dir():
+            if path in visited_directories:
+                parser.error(f"--bundle directory loop detected: {path}")
+            visited_directories.add(path)
+            for child in sorted(path.iterdir()):
+                collect(child, logical_path / child.name)
+            visited_directories.remove(path)
+            return
         if path.is_file():
-            files.append(path)
-        elif not path.is_dir():
-            parser.error("--bundle must contain only regular files and directories")
+            files.append((logical_path, path))
+            return
+        parser.error("--bundle must contain only regular files and directories")
+
+    collect(bundle_root, Path())
     binary = bundle_root / "harness"
-    if binary not in files or binary.stat().st_mode & 0o111 == 0:
+    if (
+        not any(path == Path("harness") for path, _ in files)
+        or binary.stat().st_mode & 0o111 == 0
+    ):
         parser.error("--bundle must contain an executable harness file")
 
     output = arguments.output.resolve()
@@ -61,8 +99,8 @@ def main() -> int:
             gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as zipped,
             tarfile.open(mode="w", fileobj=zipped) as archive_bundle,
         ):
-            for source_path in files:
-                relative = source_path.relative_to(bundle_root)
+            for archive_path, source_path in files:
+                relative = archive_path
                 member = tarfile.TarInfo(
                     (Path("runtime") / relative).as_posix()
                 )
