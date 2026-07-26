@@ -155,41 +155,48 @@ class Executor:
             _validate_workspace(record.current_envelope, locked_snapshot)
             _validate_authorization(record, authorization)
             sandbox_enforced = record.current_envelope.integration_mode == "enforced"
-            command = (
-                _sandbox_command(authorization)
-                if sandbox_enforced
-                else authorization.argv
-            )
             attempt = 1 + sum(
                 event.type == "command.started"
                 and event.data.get("capability_id") == authorization.capability_id
                 for event in record.events
             )
-            artifact_dir = _create_artifact_directory(
-                self._artifact_root,
-                authorization.task_id,
-                authorization.authorization_event_sequence,
-                attempt,
+            temporary_directory = Path(
+                tempfile.mkdtemp(prefix="adaptive-harness-command-")
             )
-            self._store.append_event(
-                authorization.task_id,
-                "command.started",
-                {
-                    "authorization_event_sequence": (
-                        authorization.authorization_event_sequence
-                    ),
-                    "capability_id": authorization.capability_id,
-                    "attempt": attempt,
-                },
-            )
-            return self._run(
-                authorization,
-                attempt,
-                cancellation,
-                artifact_dir,
-                command,
-                sandbox_enforced,
-            )
+            try:
+                command = (
+                    _sandbox_command(authorization, temporary_directory)
+                    if sandbox_enforced
+                    else authorization.argv
+                )
+                artifact_dir = _create_artifact_directory(
+                    self._artifact_root,
+                    authorization.task_id,
+                    authorization.authorization_event_sequence,
+                    attempt,
+                )
+                self._store.append_event(
+                    authorization.task_id,
+                    "command.started",
+                    {
+                        "authorization_event_sequence": (
+                            authorization.authorization_event_sequence
+                        ),
+                        "capability_id": authorization.capability_id,
+                        "attempt": attempt,
+                    },
+                )
+                return self._run(
+                    authorization,
+                    attempt,
+                    cancellation,
+                    artifact_dir,
+                    command,
+                    sandbox_enforced,
+                    temporary_directory,
+                )
+            finally:
+                shutil.rmtree(temporary_directory, ignore_errors=True)
 
     def _run(
         self,
@@ -199,6 +206,7 @@ class Executor:
         artifact_dir: Path,
         command: tuple[str, ...],
         sandbox_enforced: bool,
+        temporary_directory: Path,
     ) -> CommandResult:
         stdout_artifact = artifact_dir / "stdout.txt"
         stderr_artifact = artifact_dir / "stderr.txt"
@@ -208,7 +216,7 @@ class Executor:
             process = subprocess.Popen(
                 command,
                 cwd=authorization.cwd,
-                env=_controlled_environment(),
+                env=_controlled_environment(temporary_directory),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -450,7 +458,9 @@ def _event_matches_authorization(
     )
 
 
-def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
+def _sandbox_command(
+    authorization: AuthorizedCommand, temporary_directory: Path
+) -> tuple[str, ...]:
     """Wrap an authorized command in the host OS sandbox or fail closed."""
     if authorization.listener:
         raise ExecutionRejectedError(
@@ -461,6 +471,7 @@ def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
         worktree = worktree.parent
     if not (worktree / ".git").exists():
         worktree = authorization.cwd
+    git_metadata = worktree.resolve() / ".git"
     write_paths: list[Path] = []
     for value in authorization.write_paths:
         candidate = (worktree / value).resolve()
@@ -471,6 +482,10 @@ def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
         if not candidate.exists():
             raise ExecutionRejectedError(
                 f"sandbox write path must already exist: {value}"
+            )
+        if candidate == git_metadata or candidate.is_relative_to(git_metadata):
+            raise ExecutionRejectedError(
+                f"sandbox write path overlaps protected Git metadata: {value}"
             )
         write_paths.append(candidate)
 
@@ -485,12 +500,20 @@ def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
             "(allow file-read*)",
             "(allow sysctl-read)",
             '(allow file-write-data (literal "/dev/null"))',
-            f'(allow file-write* (subpath "{_sandbox_escape(tempfile.gettempdir())}"))',
+            "(allow file-write* (subpath "
+            f'"{_sandbox_escape(str(temporary_directory))}"))',
         ]
         rules.extend(
             f'(allow file-write* (subpath "{_sandbox_escape(str(path))}"))'
             for path in write_paths
         )
+        if git_metadata.exists():
+            rules.append(
+                f'(deny file-write* (literal "{_sandbox_escape(str(git_metadata))}"))'
+            )
+            rules.append(
+                f'(deny file-write* (subpath "{_sandbox_escape(str(git_metadata))}"))'
+            )
         if authorization.network is NetworkAccess.OUTBOUND:
             rules.append("(allow network-outbound)")
         else:
@@ -511,6 +534,9 @@ def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
             "/",
             "--tmpfs",
             "/tmp",
+            "--bind",
+            str(temporary_directory),
+            str(temporary_directory),
             "--ro-bind",
             str(worktree.resolve()),
             str(worktree.resolve()),
@@ -520,6 +546,10 @@ def _sandbox_command(authorization: AuthorizedCommand) -> tuple[str, ...]:
             command.extend(("--unshare-user", "--unshare-pid", "--unshare-uts"))
         for path in write_paths:
             command.extend(("--bind", str(path), str(path)))
+        if git_metadata.exists():
+            command.extend(
+                ("--ro-bind", str(git_metadata), str(git_metadata))
+            )
         command.extend(("--chdir", str(authorization.cwd), "--", *authorization.argv))
         return tuple(command)
     raise ExecutionRejectedError("no verified OS sandbox exists on this platform")
@@ -529,12 +559,13 @@ def _sandbox_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _controlled_environment() -> dict[str, str]:
-    allowed_names = ("PATH", "TMPDIR", "LANG", "LC_ALL")
+def _controlled_environment(temporary_directory: Path) -> dict[str, str]:
+    allowed_names = ("PATH", "LANG", "LC_ALL")
     environment = {
         name: os.environ[name] for name in allowed_names if name in os.environ
     }
     environment.setdefault("LANG", "C.UTF-8")
+    environment["TMPDIR"] = str(temporary_directory)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
 

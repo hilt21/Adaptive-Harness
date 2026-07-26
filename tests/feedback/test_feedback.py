@@ -1,6 +1,10 @@
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from adaptive_harness.feedback import (
     AnalysisPolicy,
@@ -17,6 +21,26 @@ from adaptive_harness.feedback import (
     classify_failure,
 )
 from adaptive_harness.init import Initializer
+from tests.storage_support import committed_storage_locator
+
+
+def _store(
+    tmp_path: Path,
+    *,
+    mode: FeedbackMode,
+    **kwargs: Any,
+) -> FeedbackStore:
+    locator = committed_storage_locator(
+        tmp_path / "project", tmp_path / "data"
+    )
+    return FeedbackStore(
+        None,
+        None,
+        project_data=locator.location().project_data,
+        mode=mode,
+        storage_locator=locator,
+        **kwargs,
+    )
 
 
 def _episode(identifier: str = "episode-1") -> FeedbackEpisode:
@@ -57,8 +81,8 @@ def test_failure_taxonomy_uses_earliest_observable_primary_cause() -> None:
 
 
 def test_off_mode_creates_no_episode_or_directory(tmp_path: Path) -> None:
-    store = FeedbackStore(
-        tmp_path, "repo-1", mode=FeedbackMode.OFF, analyzer=lambda _: {}
+    store = _store(
+        tmp_path, mode=FeedbackMode.OFF, analyzer=lambda _: {}
     )
 
     assert store.record(_episode()) is None
@@ -73,9 +97,8 @@ def test_minimal_mode_never_calls_analyzer_and_can_omit_usage(tmp_path: Path) ->
         calls += 1
         return {"summary": "should not run"}
 
-    store = FeedbackStore(
+    store = _store(
         tmp_path,
-        "repo-1",
         mode=FeedbackMode.MINIMAL,
         analysis_policy=AnalysisPolicy.AFTER_EACH_TASK,
         include_token_usage=False,
@@ -92,6 +115,44 @@ def test_minimal_mode_never_calls_analyzer_and_can_omit_usage(tmp_path: Path) ->
     assert "analysis" not in document
 
 
+def test_feedback_writes_use_project_data_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries: list[Path] = []
+
+    @contextmanager
+    def tracked_lock(
+        project_data: Path,
+        storage_locator: object,
+        *,
+        force_user_data: bool,
+    ) -> Any:
+        assert storage_locator is not None
+        assert force_user_data is False
+        entries.append(project_data)
+        yield
+
+    monkeypatch.setattr(
+        "adaptive_harness.feedback.store.bound_project_data_lock", tracked_lock
+    )
+    store = _store(tmp_path, mode=FeedbackMode.MINIMAL)
+
+    store.record(_episode())
+
+    assert entries == [store.root.parent]
+
+
+def test_feedback_writer_requires_clone_binding(tmp_path: Path) -> None:
+    store = FeedbackStore(
+        tmp_path, "repo-1", mode=FeedbackMode.MINIMAL
+    )
+
+    with pytest.raises(ValueError, match="storage locator is required"):
+        store.list()
+    with pytest.raises(ValueError, match="storage locator is required"):
+        store.record(_episode())
+
+
 def test_research_mode_calls_only_explicit_bounded_analyzer(tmp_path: Path) -> None:
     calls = 0
 
@@ -101,9 +162,8 @@ def test_research_mode_calls_only_explicit_bounded_analyzer(tmp_path: Path) -> N
         assert "command_event_ids" in document
         return {"summary": "local analysis", "confidence": 0.7}
 
-    store = FeedbackStore(
+    store = _store(
         tmp_path,
-        "repo-1",
         mode=FeedbackMode.RESEARCH,
         analysis_policy=AnalysisPolicy.AFTER_EACH_TASK,
         analyzer=analyzer,

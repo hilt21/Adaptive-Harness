@@ -18,13 +18,14 @@ from adaptive_harness.cli.i18n import (
     resolve_locale,
     set_locale,
     translate,
+    translate_error,
 )
 from adaptive_harness.configuration import ConfigurationManager
 from adaptive_harness.core.executor import ExecutorError
 from adaptive_harness.core.gateway import CapabilityDeniedError, ScopedApproval
 from adaptive_harness.core.store import TaskStoreError
 from adaptive_harness.core.task_service import TaskService
-from adaptive_harness.core.workspace import GitWorkspace
+from adaptive_harness.distribution import SelfManager
 from adaptive_harness.feedback import (
     AnalysisPolicy,
     EffectObservation,
@@ -38,7 +39,13 @@ from adaptive_harness.feedback import (
 )
 from adaptive_harness.init import Doctor, DoctorReport, InitializationError, Initializer
 from adaptive_harness.modules import ActivationPolicy, ModuleManager
-from adaptive_harness.storage import ExportManager, StorageManager
+from adaptive_harness.storage import (
+    ExportManager,
+    StorageLocator,
+    StorageManager,
+    StorageMigrator,
+    StorageMode,
+)
 from adaptive_harness.templates import TemplateCatalog
 from adaptive_harness.upgrade import UpgradeManager
 
@@ -78,6 +85,8 @@ def main(
             return _run_export(arguments, input_fn)
         if arguments.command == "upgrade":
             return _run_upgrade(arguments, input_fn)
+        if arguments.command == "self":
+            return _run_self(arguments, input_fn)
         if arguments.command == "task":
             return _run_task(arguments)
         if arguments.command == "config":
@@ -101,8 +110,30 @@ def main(
     return 2
 
 
+class _LocalizedArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        add_help = kwargs.pop("add_help", True)
+        kwargs["add_help"] = False
+        super().__init__(*args, **kwargs)
+        self._positionals.title = translate("positional arguments")
+        self._optionals.title = translate("options")
+        if add_help:
+            self.add_argument(
+                "-h",
+                "--help",
+                action="help",
+                help=translate("show this help message and exit"),
+            )
+
+    def format_help(self) -> str:
+        return super().format_help().replace("usage: ", translate("usage: "), 1)
+
+    def format_usage(self) -> str:
+        return super().format_usage().replace("usage: ", translate("usage: "), 1)
+
+
 def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _LocalizedArgumentParser(
         prog="harness", description=translate("Adaptive Harness command-line interface")
     )
     parser.add_argument("--version", action="version", version=__version__)
@@ -113,7 +144,7 @@ def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
         dest="command",
         metavar=(
             "{init,doctor,integration,module,template,feedback,suggest,storage,"
-            "export,upgrade,task,config,capability}"
+            "export,upgrade,self,task,config,capability}"
         ),
     )
 
@@ -244,18 +275,38 @@ def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
     suggest_parser.add_argument("--data-root", type=Path)
 
     storage_parser = subparsers.add_parser(
-        "storage", help=translate("inspect, prune, or pin local Harness data")
+        "storage", help=translate("inspect, migrate, prune, or pin local Harness data")
     )
     storage_commands = storage_parser.add_subparsers(
         dest="storage_command", required=True
     )
-    storage_status = storage_commands.add_parser("status", help="show local usage")
+    storage_status = storage_commands.add_parser(
+        "status", help=translate("show local storage usage")
+    )
     _integration_common_options(storage_status)
     storage_status.add_argument("--data-root", type=Path)
-    storage_prune = storage_commands.add_parser("prune", help="plan local retention")
+    storage_mode = storage_commands.add_parser(
+        "mode", help=translate("show local storage mode")
+    )
+    _integration_common_options(storage_mode)
+    storage_mode.add_argument("--data-root", type=Path)
+    storage_migrate = storage_commands.add_parser(
+        "migrate", help=translate("plan or apply a local storage migration")
+    )
+    storage_migrate.add_argument(
+        "target_mode", choices=tuple(item.value for item in StorageMode)
+    )
+    storage_migrate.add_argument("--rollback", action="store_true")
+    _mutation_options(storage_migrate)
+    storage_migrate.add_argument("--data-root", type=Path)
+    storage_prune = storage_commands.add_parser(
+        "prune", help=translate("plan local retention")
+    )
     _mutation_options(storage_prune)
     storage_prune.add_argument("--data-root", type=Path)
-    storage_pin = storage_commands.add_parser("pin", help="pin one local item")
+    storage_pin = storage_commands.add_parser(
+        "pin", help=translate("pin one local item")
+    )
     storage_pin.add_argument("item_id")
     storage_pin.add_argument("--recommendation-ref")
     _mutation_options(storage_pin)
@@ -293,6 +344,24 @@ def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
     upgrade_rollback.add_argument("--yes", action="store_true")
     _integration_common_options(upgrade_rollback)
     upgrade_rollback.add_argument("--data-root", type=Path)
+
+    self_parser = subparsers.add_parser(
+        "self", help=translate("manage a standalone Harness installation")
+    )
+    self_commands = self_parser.add_subparsers(dest="self_command", required=True)
+    self_update = self_commands.add_parser(
+        "update", help=translate("download and verify a standalone Runtime update")
+    )
+    self_update.add_argument("--version")
+    self_update.add_argument("--json", action="store_true")
+    self_update.add_argument("--verbose", action="store_true")
+    self_uninstall = self_commands.add_parser(
+        "uninstall", help=translate("remove a standalone Runtime installation")
+    )
+    self_uninstall.add_argument("--purge-data", action="store_true")
+    self_uninstall.add_argument("--yes", action="store_true")
+    self_uninstall.add_argument("--json", action="store_true")
+    self_uninstall.add_argument("--verbose", action="store_true")
 
     task_parser = subparsers.add_parser(
         "task",
@@ -685,13 +754,21 @@ def _run_feedback(
     configuration = FeedbackConfiguration(arguments.root)
     current = configuration.current()
     if arguments.feedback_command == "show":
-        repository_id = GitWorkspace(arguments.root).snapshot().repository_id
+        data_root = arguments.data_root or _default_data_root()
+        locator = StorageLocator(arguments.root, data_root)
+        force_user_data = arguments.data_root is not None
+        project_data = locator.location(
+            force_user_data=force_user_data
+        ).project_data
         store = FeedbackStore(
-            arguments.data_root or _default_data_root(),
-            repository_id,
+            None,
+            None,
+            project_data=project_data,
             mode=FeedbackMode(current["mode"]),
             analysis_policy=AnalysisPolicy(current["analysis_policy"]),
             include_token_usage=bool(current["include_token_usage"]),
+            storage_locator=locator,
+            force_user_data=force_user_data,
         )
         episodes = store.list()
         document = {
@@ -731,13 +808,21 @@ def _run_feedback(
 def _run_suggest(arguments: argparse.Namespace) -> int:
     configuration = FeedbackConfiguration(arguments.root)
     current = configuration.current()
-    repository_id = GitWorkspace(arguments.root).snapshot().repository_id
+    data_root = arguments.data_root or _default_data_root()
+    locator = StorageLocator(arguments.root, data_root)
+    force_user_data = arguments.data_root is not None
+    project_data = locator.location(
+        force_user_data=force_user_data
+    ).project_data
     store = FeedbackStore(
-        arguments.data_root or _default_data_root(),
-        repository_id,
+        None,
+        None,
+        project_data=project_data,
         mode=FeedbackMode(current["mode"]),
         analysis_policy=AnalysisPolicy(current["analysis_policy"]),
         include_token_usage=bool(current["include_token_usage"]),
+        storage_locator=locator,
+        force_user_data=force_user_data,
     )
     observations: list[EffectObservation] = []
     for episode in store.list():
@@ -808,13 +893,88 @@ def _default_data_root() -> Path:
     return Path.home() / ".local/share/harness"
 
 
+def _selected_project_data(root: Path, data_root: Path | None) -> Path:
+    locator = StorageLocator(root, data_root or _default_data_root())
+    return locator.location(force_user_data=data_root is not None).project_data
+
+
 def _run_storage(
     arguments: argparse.Namespace,
     input_fn: Callable[[str], str],
 ) -> int:
-    repository_id = GitWorkspace(arguments.root).snapshot().repository_id
+    data_root = getattr(arguments, "data_root", None)
+    locator = StorageLocator(
+        arguments.root, data_root or _default_data_root()
+    )
+    location = locator.location(force_user_data=data_root is not None)
+    document: dict[str, Any]
+    if arguments.storage_command == "mode":
+        document = {
+            "mode": location.mode.value,
+            "project_data": str(location.project_data),
+            "scope": "local-clone",
+        }
+        if arguments.json:
+            _emit_json(document)
+        else:
+            print(
+                translate("Storage mode: {mode}").format(mode=document["mode"])
+            )
+            print(
+                translate("Project data: {project_data}").format(
+                    project_data=document["project_data"]
+                )
+            )
+            if arguments.verbose:
+                print(translate("Scope: {scope}").format(scope=document["scope"]))
+        return 0
+    if arguments.storage_command == "migrate":
+        if arguments.yes and not arguments.apply:
+            raise ValueError("--yes requires --apply")
+        migrator = StorageMigrator(locator)
+        plan = migrator.plan(
+            StorageMode(arguments.target_mode), rollback=arguments.rollback
+        )
+        document = {
+            "status": (
+                "rolled_back"
+                if arguments.apply and plan.reuse_target
+                else "applied" if arguments.apply else "planned"
+            ),
+            "source_mode": plan.source_mode.value,
+            "target_mode": plan.target_mode.value,
+            "source": str(plan.source),
+            "target": str(plan.target),
+            "item_count": len(plan.items),
+            "bytes_to_copy": plan.bytes_to_copy,
+            "conflicts": list(plan.conflicts),
+            "source_retained": plan.source.exists(),
+            "rollback": plan.reuse_target,
+        }
+        if arguments.apply:
+            review_document = {**document, "status": "planned"}
+            if arguments.json:
+                print(
+                    json.dumps(review_document, ensure_ascii=False, sort_keys=True),
+                    file=sys.stderr,
+                )
+            else:
+                _print_storage_migration(review_document, verbose=True)
+        if arguments.apply and not _confirm_mutation(
+            "storage migrate", arguments, input_fn
+        ):
+            return 1
+        if arguments.apply:
+            migrator.apply(plan)
+        if arguments.json:
+            _emit_json(document)
+        else:
+            _print_storage_migration(document, verbose=arguments.verbose)
+        return 0
     manager = StorageManager(
-        arguments.data_root or _default_data_root(), repository_id
+        location.project_data,
+        storage_locator=locator,
+        force_user_data=data_root is not None,
     )
     if arguments.storage_command == "status":
         status = manager.status()
@@ -830,8 +990,15 @@ def _run_storage(
             _emit_json(document)
         else:
             print(
-                f"{status.item_count} items, {status.bytes_on_disk} bytes; "
-                f"{status.active_count} active, {status.pinned_count} pinned."
+                translate(
+                    "{items} items, {bytes} bytes; {active} active, "
+                    "{pinned} pinned."
+                ).format(
+                    items=status.item_count,
+                    bytes=status.bytes_on_disk,
+                    active=status.active_count,
+                    pinned=status.pinned_count,
+                )
             )
         return 0
     if arguments.yes and not arguments.apply:
@@ -854,9 +1021,14 @@ def _run_storage(
             _emit_json(document)
         else:
             print(
-                f"{len(prune_plan.item_ids)} items, "
-                f"{prune_plan.bytes_reclaimable} bytes "
-                f"{'pruned' if arguments.apply else 'eligible for pruning'}."
+                translate(
+                    "{items} items, {bytes} bytes pruned."
+                    if arguments.apply
+                    else "{items} items, {bytes} bytes eligible for pruning."
+                ).format(
+                    items=len(prune_plan.item_ids),
+                    bytes=prune_plan.bytes_reclaimable,
+                )
             )
         return 0
     pin_plan = manager.plan_pin(
@@ -875,7 +1047,13 @@ def _run_storage(
     if arguments.json:
         _emit_json(document)
     else:
-        print(f"Storage pin {'applied' if arguments.apply else 'planned'}.")
+        print(
+            translate(
+                "Storage pin applied."
+                if arguments.apply
+                else "Storage pin planned."
+            )
+        )
     return 0
 
 
@@ -885,11 +1063,9 @@ def _run_export(
 ) -> int:
     if arguments.yes and not arguments.apply:
         raise ValueError("--yes requires --apply")
-    repository_id = GitWorkspace(arguments.root).snapshot().repository_id
-    data_root = arguments.data_root or _default_data_root()
     manager = ExportManager(
         arguments.root,
-        Path(data_root) / "projects" / repository_id,
+        _selected_project_data(arguments.root, arguments.data_root),
     )
     plan = manager.plan(arguments.output)
     document = {
@@ -911,11 +1087,17 @@ def _run_upgrade(
     arguments: argparse.Namespace,
     input_fn: Callable[[str], str],
 ) -> int:
-    repository_id = GitWorkspace(arguments.root).snapshot().repository_id
+    data_root = arguments.data_root or _default_data_root()
+    locator = StorageLocator(arguments.root, data_root)
+    force_user_data = arguments.data_root is not None
+    project_data = locator.location(
+        force_user_data=force_user_data
+    ).project_data
     manager = UpgradeManager(
         arguments.root,
-        arguments.data_root or _default_data_root(),
-        repository_id,
+        project_data=project_data,
+        storage_locator=locator,
+        force_user_data=force_user_data,
     )
     if arguments.upgrade_command == "check":
         status = manager.check()
@@ -967,10 +1149,151 @@ def _run_upgrade(
     )
 
 
-def _run_task(arguments: argparse.Namespace) -> int:
-    service = TaskService(
-        arguments.root, arguments.data_root or _default_data_root()
+def _run_self(
+    arguments: argparse.Namespace,
+    input_fn: Callable[[str], str],
+) -> int:
+    manager = SelfManager()
+    document: dict[str, Any]
+    if arguments.self_command == "update":
+        update_result = manager.update(arguments.version)
+        document = {
+            "status": "updated",
+            "previous_version": update_result.previous_version,
+            "version": update_result.version,
+            "binary_path": str(update_result.binary_path),
+            "backup_path": str(update_result.backup_path),
+            "cleanup_pending": [
+                str(path) for path in update_result.cleanup_pending
+            ],
+        }
+        human_message = translate(
+            "Updated Adaptive Harness from {previous} to {version}."
+        ).format(
+            previous=update_result.previous_version,
+            version=update_result.version,
+        )
+    else:
+        uninstall_plan = manager.plan_uninstall(purge_data=arguments.purge_data)
+        review_document = {
+            "status": "planned",
+            "binary_path": str(uninstall_plan.manifest.binary_path),
+            "runtime_path": str(uninstall_plan.manifest.runtime_path),
+            "runtime_root": str(uninstall_plan.runtime_root),
+            "launcher_backup": str(uninstall_plan.launcher_backup),
+            "affected_paths": [
+                str(path) for path in uninstall_plan.affected_paths
+            ],
+            "manifest_path": str(manager.manifest_path),
+            "path_profile": (
+                str(uninstall_plan.manifest.path_profile)
+                if uninstall_plan.manifest.path_profile is not None
+                else None
+            ),
+            "data_root": str(uninstall_plan.manifest.data_root),
+            "purge_data": uninstall_plan.purge_data,
+            "profile_diff": uninstall_plan.profile_diff,
+        }
+        if arguments.json:
+            print(
+                json.dumps(review_document, ensure_ascii=False, sort_keys=True),
+                file=sys.stderr,
+            )
+        else:
+            _print_uninstall_plan(review_document)
+        if not arguments.yes:
+            if arguments.json:
+                raise ValueError("JSON standalone uninstall requires --yes")
+            answer = input_fn(
+                translate("Apply the reviewed standalone uninstall? [y/N] ")
+            )
+            if answer.strip().lower() not in {"y", "yes"}:
+                print(translate("Standalone uninstall cancelled; no data was changed."))
+                return 1
+        uninstall_result = manager.uninstall(uninstall_plan)
+        document = {
+            "status": "uninstalled",
+            "binary_path": str(uninstall_result.binary_path),
+            "data_root": str(uninstall_result.data_root),
+            "data_purged": uninstall_result.data_purged,
+            "cleanup_pending": [
+                str(path) for path in uninstall_result.cleanup_pending
+            ],
+        }
+        if uninstall_result.data_purged:
+            human_message = translate(
+                "Uninstalled Adaptive Harness and purged local records."
+            )
+        elif uninstall_plan.purge_data:
+            human_message = translate(
+                "Uninstalled Adaptive Harness; local data purge is incomplete."
+            )
+        else:
+            human_message = translate(
+                "Uninstalled Adaptive Harness; local records were preserved."
+            )
+    if arguments.json:
+        _emit_json(document)
+    else:
+        print(human_message)
+        if document["cleanup_pending"]:
+            print(
+                translate("Cleanup pending: {paths}").format(
+                    paths=", ".join(document["cleanup_pending"])
+                )
+            )
+        if arguments.verbose:
+            print(
+                translate("Launcher: {path}").format(path=document["binary_path"])
+            )
+            if arguments.self_command == "update":
+                print(
+                    translate("Previous Runtime: {path}").format(
+                        path=document["backup_path"]
+                    )
+                )
+            else:
+                print(
+                    translate("Data root: {path}").format(path=document["data_root"])
+                )
+    return 0
+
+
+def _print_uninstall_plan(document: dict[str, Any]) -> None:
+    print(translate("Standalone uninstall plan."))
+    print(translate("Launcher: {path}").format(path=document["binary_path"]))
+    print(translate("Runtime: {path}").format(path=document["runtime_path"]))
+    print(
+        translate("Runtime root: {path}").format(path=document["runtime_root"])
     )
+    print(
+        translate("Previous launcher: {path}").format(
+            path=document["launcher_backup"]
+        )
+    )
+    print(translate("Manifest: {path}").format(path=document["manifest_path"]))
+    profile = document["path_profile"] or translate("none")
+    print(translate("Shell profile: {path}").format(path=profile))
+    print(translate("Data root: {path}").format(path=document["data_root"]))
+    print(translate("Purge data: {purge}").format(purge=document["purge_data"]))
+    if document["profile_diff"]:
+        print(document["profile_diff"], end="")
+
+
+def _run_task(arguments: argparse.Namespace) -> int:
+    data_root = arguments.data_root or _default_data_root()
+    service = TaskService(
+        arguments.root,
+        data_root=data_root,
+        force_user_data=arguments.data_root is not None,
+    )
+    return _run_task_locked(arguments, service)
+
+
+def _run_task_locked(
+    arguments: argparse.Namespace,
+    service: TaskService,
+) -> int:
     if arguments.task_command == "start":
         record = service.start(
             goal=arguments.goal,
@@ -1116,9 +1439,20 @@ def _run_capability(
     arguments: argparse.Namespace,
     input_fn: Callable[[str], str],
 ) -> int:
+    data_root = arguments.data_root or _default_data_root()
     service = TaskService(
-        arguments.root, arguments.data_root or _default_data_root()
+        arguments.root,
+        data_root=data_root,
+        force_user_data=arguments.data_root is not None,
     )
+    return _run_capability_locked(arguments, input_fn, service)
+
+
+def _run_capability_locked(
+    arguments: argparse.Namespace,
+    input_fn: Callable[[str], str],
+    service: TaskService,
+) -> int:
     if arguments.capability_command == "approve":
         if arguments.yes and not arguments.apply:
             raise ValueError("--yes requires --apply")
@@ -1192,6 +1526,37 @@ def _approval_document(approval: ScopedApproval) -> dict[str, Any]:
     }
 
 
+def _print_storage_migration(document: dict[str, Any], *, verbose: bool) -> None:
+    status_message = (
+        "Storage migration rolled back."
+        if document["status"] == "rolled_back"
+        else "Storage migration applied."
+        if document["status"] == "applied"
+        else "Storage migration planned."
+    )
+    print(translate(status_message))
+    print(translate("Source: {source}").format(source=document["source"]))
+    print(translate("Target: {target}").format(target=document["target"]))
+    print(
+        translate("Items: {items}; bytes: {bytes}").format(
+            items=document["item_count"], bytes=document["bytes_to_copy"]
+        )
+    )
+    if document["conflicts"]:
+        print(
+            translate("Conflicts: {conflicts}").format(
+                conflicts=", ".join(document["conflicts"])
+            )
+        )
+    if verbose:
+        print(
+            translate("Rollback: {rollback}; source retained: {retained}").format(
+                rollback=document["rollback"],
+                retained=document["source_retained"],
+            )
+        )
+
+
 def _confirm_mutation(
     label: str,
     arguments: argparse.Namespace,
@@ -1201,12 +1566,19 @@ def _confirm_mutation(
         return True
     if arguments.json:
         raise ValueError("JSON apply requires --yes to avoid an interactive prompt")
+    localized_label = translate(label)
     answer = input_fn(
-        f"{label}: {translate('Apply the reviewed changes? [y/N] ')}"
+        translate("{label}: Apply the reviewed changes? [y/N] ").format(
+            label=localized_label
+        )
     )
     if answer.strip().lower() in {"y", "yes"}:
         return True
-    print(f"{label.capitalize()} cancelled; no data was changed.")
+    print(
+        translate("{label} cancelled; no data was changed.").format(
+            label=localized_label.capitalize()
+        )
+    )
     return False
 
 
@@ -1293,7 +1665,10 @@ def _emit_error(message: str, *, json_output: bool) -> None:
     if json_output:
         _emit_json({"status": "error", "message": message})
     else:
-        print(f"{translate('error')}: {message}", file=sys.stderr)
+        print(
+            f"{translate('error')}: {translate_error(message)}",
+            file=sys.stderr,
+        )
 
 
 __all__ = ["main"]

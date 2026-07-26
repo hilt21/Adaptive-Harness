@@ -1,5 +1,7 @@
 import sys
+import tempfile
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
@@ -16,12 +18,14 @@ from adaptive_harness.core.executor import (
 )
 from adaptive_harness.core.gateway import (
     ApprovalPolicy,
+    AuthorizedCommand,
     Capability,
     CapabilityGateway,
     ExecutionEnvironment,
     NetworkAccess,
     ProjectPolicy,
     Reversibility,
+    ScopedApproval,
     SideEffect,
     WorkspaceSnapshot,
 )
@@ -231,6 +235,44 @@ def test_enforced_executor_fails_closed_without_host_sandbox(
         executor.execute(authorization)
 
 
+def test_observe_executor_remains_available_without_host_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capability = make_capability((sys.executable, "-c", "pass"))
+    executor, gateway, _, _ = prepare_execution(tmp_path, capability)
+    authorization = gateway.authorize("task-001", capability.id)
+    monkeypatch.setattr("adaptive_harness.core.executor.shutil.which", lambda _: None)
+
+    assert executor.execute(authorization).status == "succeeded"
+
+
+def test_sandbox_preflight_failure_does_not_poison_execution_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capability = make_capability((sys.executable, "-c", "pass"))
+    executor, gateway, store, _ = prepare_execution(tmp_path, capability)
+    store.amend("task-001", integration_mode="enforced")
+    authorization = gateway.authorize("task-001", capability.id)
+    calls = 0
+
+    def flaky_sandbox(
+        current: AuthorizedCommand, temporary_directory: Path
+    ) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ExecutionRejectedError("sandbox preflight failed")
+        assert temporary_directory.is_dir()
+        return current.argv
+
+    monkeypatch.setattr(executor_module, "_sandbox_command", flaky_sandbox)
+
+    with pytest.raises(ExecutionRejectedError, match="preflight"):
+        executor.execute(authorization)
+
+    assert executor.execute(authorization).status == "succeeded"
+
+
 def test_linux_sandbox_rebinds_tmp_worktree_after_private_tmpfs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -243,12 +285,76 @@ def test_linux_sandbox_rebinds_tmp_worktree_after_private_tmpfs(
         "adaptive_harness.core.executor.shutil.which", lambda _: "/usr/bin/bwrap"
     )
 
-    command = executor_module._sandbox_command(authorization)
+    sandbox_temp = tmp_path / "sandbox-temp"
+    sandbox_temp.mkdir()
+    command = executor_module._sandbox_command(authorization, sandbox_temp)
 
     tmpfs_index = command.index("--tmpfs")
     worktree_bind_index = command.index(str(tmp_path.resolve()), tmpfs_index)
     assert worktree_bind_index > tmpfs_index
     assert command[worktree_bind_index - 1] == "--ro-bind"
+
+
+def test_linux_sandbox_keeps_git_metadata_read_only_when_worktree_is_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_directory = tmp_path / ".git"
+    git_directory.mkdir()
+    (git_directory / "adaptive-harness").mkdir()
+    capability = replace(
+        make_capability((sys.executable, "-c", "pass")),
+        write_paths=(".",),
+        side_effects=(SideEffect.FILESYSTEM_READ, SideEffect.FILESYSTEM_WRITE),
+    )
+    _, gateway, store, _ = prepare_execution(tmp_path, capability)
+    store.amend("task-001", allowed_scope=("src/", "tests/", "."))
+    approval = ScopedApproval(
+        id="approval-001",
+        task_id="task-001",
+        capability_id=capability.id,
+        base_sha="a" * 40,
+        worktree_path=tmp_path.resolve(),
+        read_paths=capability.read_paths,
+        write_paths=capability.write_paths,
+        side_effects=capability.side_effects,
+        network=capability.network,
+        listener=capability.listener,
+        environment=capability.environment,
+        max_uses=1,
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    authorization = gateway.authorize(
+        "task-001", capability.id, approvals=(approval,)
+    )
+    monkeypatch.setattr("adaptive_harness.core.executor.sys.platform", "linux")
+    monkeypatch.setattr(
+        "adaptive_harness.core.executor.shutil.which", lambda _: "/usr/bin/bwrap"
+    )
+
+    sandbox_temp = tmp_path / "sandbox-temp"
+    sandbox_temp.mkdir()
+    command = executor_module._sandbox_command(authorization, sandbox_temp)
+
+    writable_mount = ("--bind", str(tmp_path.resolve()), str(tmp_path.resolve()))
+    protected_mount = ("--ro-bind", str(git_directory), str(git_directory))
+    assert _contains_sequence(command, writable_mount)
+    assert _contains_sequence(command, protected_mount)
+    assert command.index(protected_mount[1]) > command.index(writable_mount[1])
+
+    monkeypatch.setattr("adaptive_harness.core.executor.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "adaptive_harness.core.executor.shutil.which",
+        lambda _: "/usr/bin/sandbox-exec",
+    )
+    macos_command = executor_module._sandbox_command(authorization, sandbox_temp)
+    assert (
+        f'(deny file-write* (literal "{git_directory}"))' in macos_command[2]
+    )
+    assert f'(allow file-write* (subpath "{sandbox_temp}"))' in macos_command[2]
+    system_temp_rule = (
+        f'(allow file-write* (subpath "{Path(tempfile.gettempdir())}"))'
+    )
+    assert system_temp_rule not in macos_command[2]
 
 
 def test_workspace_lease_prevents_concurrent_execution(tmp_path: Path) -> None:
@@ -262,6 +368,13 @@ def test_workspace_lease_prevents_concurrent_execution(tmp_path: Path) -> None:
         "other-task",
     ), pytest.raises(LeaseConflictError):
         executor.execute(authorization)
+
+
+def _contains_sequence(values: tuple[str, ...], expected: tuple[str, ...]) -> bool:
+    return any(
+        values[index : index + len(expected)] == expected
+        for index in range(len(values) - len(expected) + 1)
+    )
 
 
 def test_artifact_symlink_cannot_escape_the_artifact_root(tmp_path: Path) -> None:

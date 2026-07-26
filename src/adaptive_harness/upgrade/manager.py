@@ -24,6 +24,11 @@ from adaptive_harness.init.transaction import (
     RepositoryTransaction,
 )
 from adaptive_harness.schemas import validator_for
+from adaptive_harness.storage.location import (
+    StorageLocator,
+    bound_project_data_lock,
+    resolve_project_data,
+)
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
@@ -98,13 +103,22 @@ def check_runtime_version(configured: str) -> UpgradeStatus:
 class UpgradeManager:
     """Migrate known configuration versions and preserve exact rollback bytes."""
 
-    def __init__(self, root: Path, data_root: Path, repository_id: str) -> None:
-        if not repository_id or "/" in repository_id or ".." in repository_id:
-            raise ValueError("repository id is unsafe")
+    def __init__(
+        self,
+        root: Path,
+        data_root: Path | None = None,
+        repository_id: str | None = None,
+        *,
+        project_data: Path | None = None,
+        storage_locator: StorageLocator | None = None,
+        force_user_data: bool = False,
+    ) -> None:
         self.root = Path(root).resolve()
-        self.recovery_root = (
-            Path(data_root).resolve() / "projects" / repository_id / "upgrades"
-        )
+        project_root = resolve_project_data(data_root, repository_id, project_data)
+        self.project_root = project_root
+        self._storage_locator = storage_locator
+        self._force_user_data = force_user_data
+        self.recovery_root = project_root / "upgrades"
         self._transaction = RepositoryTransaction(self.root)
 
     def check(self) -> UpgradeStatus:
@@ -144,72 +158,101 @@ class UpgradeManager:
         )
 
     def apply(self, plan: UpgradePlan) -> None:
-        if plan.root != self.root or plan.operation != "upgrade":
-            raise ValueError("upgrade plan belongs to another operation or project")
-        if not plan.changes:
-            return
-        recovery = {
-            "schema_version": "1.0",
-            "id": plan.recovery_id,
-            "created_at": datetime.now(UTC).isoformat(),
-            "rolled_back": False,
-            "changes": [
-                {
-                    "path": change.path,
-                    "before": (
-                        base64.b64encode(change.before).decode("ascii")
-                        if change.before is not None
-                        else None
-                    ),
-                    "after_sha256": hashlib.sha256(change.after).hexdigest(),
-                }
-                for change in plan.changes
-            ],
-        }
-        self.recovery_root.mkdir(parents=True, exist_ok=True)
-        _atomic_json(self.recovery_root / f"{plan.recovery_id}.json", recovery)
-        self._transaction.apply(plan.changes)
+        with bound_project_data_lock(
+            self.project_root,
+            self._storage_locator,
+            force_user_data=self._force_user_data,
+        ):
+            if plan.root != self.root or plan.operation != "upgrade":
+                raise ValueError(
+                    "upgrade plan belongs to another operation or project"
+                )
+            if not plan.changes:
+                return
+            recovery = {
+                "schema_version": "1.0",
+                "id": plan.recovery_id,
+                "created_at": datetime.now(UTC).isoformat(),
+                "rolled_back": False,
+                "changes": [
+                    {
+                        "path": change.path,
+                        "before": (
+                            base64.b64encode(change.before).decode("ascii")
+                            if change.before is not None
+                            else None
+                        ),
+                        "after_sha256": hashlib.sha256(change.after).hexdigest(),
+                    }
+                    for change in plan.changes
+                ],
+            }
+            self.recovery_root.mkdir(parents=True, exist_ok=True)
+            _atomic_json(
+                self.recovery_root / f"{plan.recovery_id}.json", recovery
+            )
+            self._transaction.apply(plan.changes)
 
     def plan_rollback(self, recovery_id: str | None = None) -> UpgradePlan:
-        path = self._recovery_path(recovery_id)
-        recovery = _load_json_object(path)
-        if recovery.get("rolled_back") is True:
-            raise ValueError("upgrade recovery point was already rolled back")
-        changes: list[PlannedChange] = []
-        for item in recovery.get("changes", []):
-            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-                raise ValueError("upgrade recovery point is invalid")
-            before_encoded = item.get("before")
-            if not isinstance(before_encoded, str):
-                raise ValueError("rollback of newly created files is unsupported")
-            restored = base64.b64decode(before_encoded, validate=True)
-            target = self.root / item["path"]
-            current = target.read_bytes() if target.is_file() else None
-            if current is None or hashlib.sha256(current).hexdigest() != item.get(
-                "after_sha256"
-            ):
-                raise ValueError(
-                    f"upgraded file changed before rollback: {item['path']}"
-                )
-            if current != restored:
-                changes.append(PlannedChange(item["path"], current, restored))
-        return UpgradePlan(
-            self.root,
-            "rollback",
-            cast(str, recovery["id"]),
-            tuple(changes),
-            ("rollback restores the exact pre-upgrade bytes",),
-            (),
-        )
+        with bound_project_data_lock(
+            self.project_root,
+            self._storage_locator,
+            force_user_data=self._force_user_data,
+        ):
+            path = self._recovery_path(recovery_id)
+            recovery = _load_json_object(path)
+            if recovery.get("rolled_back") is True:
+                raise ValueError("upgrade recovery point was already rolled back")
+            changes: list[PlannedChange] = []
+            for item in recovery.get("changes", []):
+                if not isinstance(item, dict) or not isinstance(
+                    item.get("path"), str
+                ):
+                    raise ValueError("upgrade recovery point is invalid")
+                before_encoded = item.get("before")
+                if not isinstance(before_encoded, str):
+                    raise ValueError(
+                        "rollback of newly created files is unsupported"
+                    )
+                restored = base64.b64decode(before_encoded, validate=True)
+                target = self.root / item["path"]
+                current = target.read_bytes() if target.is_file() else None
+                if (
+                    current is None
+                    or hashlib.sha256(current).hexdigest()
+                    != item.get("after_sha256")
+                ):
+                    raise ValueError(
+                        f"upgraded file changed before rollback: {item['path']}"
+                    )
+                if current != restored:
+                    changes.append(
+                        PlannedChange(item["path"], current, restored)
+                    )
+            return UpgradePlan(
+                self.root,
+                "rollback",
+                cast(str, recovery["id"]),
+                tuple(changes),
+                ("rollback restores the exact pre-upgrade bytes",),
+                (),
+            )
 
     def apply_rollback(self, plan: UpgradePlan) -> None:
-        if plan.root != self.root or plan.operation != "rollback":
-            raise ValueError("rollback plan belongs to another operation or project")
-        self._transaction.apply(plan.changes)
-        path = self._recovery_path(plan.recovery_id)
-        recovery = _load_json_object(path)
-        recovery["rolled_back"] = True
-        _atomic_json(path, recovery)
+        with bound_project_data_lock(
+            self.project_root,
+            self._storage_locator,
+            force_user_data=self._force_user_data,
+        ):
+            if plan.root != self.root or plan.operation != "rollback":
+                raise ValueError(
+                    "rollback plan belongs to another operation or project"
+                )
+            self._transaction.apply(plan.changes)
+            path = self._recovery_path(plan.recovery_id)
+            recovery = _load_json_object(path)
+            recovery["rolled_back"] = True
+            _atomic_json(path, recovery)
 
     def _changes(self, candidates: dict[str, bytes]) -> tuple[PlannedChange, ...]:
         changes: list[PlannedChange] = []

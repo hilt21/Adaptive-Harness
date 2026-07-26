@@ -1,0 +1,152 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality-gate:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        python-version: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - run: uv sync --dev
+      - run: uv run ruff check .
+      - run: uv run mypy src tests
+      - run: uv run pytest
+        env:
+          HARNESS_RUN_OS_SANDBOX_E2E: "1"
+
+  build-standalone:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: linux-x86_64
+          - runner: ubuntu-22.04-arm
+            target: linux-arm64
+          - runner: macos-15-intel
+            target: macos-x86_64
+          - runner: macos-15
+            target: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Resolve and validate version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          uv run python -c 'import sys; from adaptive_harness.distribution.version import is_semver; assert is_semver(sys.argv[1])' "$version"
+          package_version="$(uv run python -c 'import adaptive_harness; print(adaptive_harness.__version__)')"
+          test "$version" = "$package_version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - run: uv sync --group release
+      - name: Build self-contained runtime
+        run: >-
+          uv run --group release python -m PyInstaller
+          --clean --onedir --name harness
+          --collect-data adaptive_harness
+          src/adaptive_harness/__main__.py
+      - name: Smoke test runtime
+        run: |
+          test "$(dist/harness/harness --version)" = "$VERSION"
+          dist/harness/harness --help >/dev/null
+      - name: Package release artifact
+        run: >-
+          uv run python scripts/package_release.py
+          --bundle dist/harness
+          --version "$VERSION"
+          --target "${{ matrix.target }}"
+          --output release
+      - name: Standalone lifecycle gate
+        shell: bash
+        run: |
+          release_root="$RUNNER_TEMP/local-release"
+          release_dir="$release_root/v$VERSION"
+          smoke_home="$RUNNER_TEMP/harness-home"
+          install_dir="$smoke_home/bin"
+          state_dir="$smoke_home/state"
+          mkdir -p "$release_dir" "$smoke_home"
+          cp release/*.tar.gz "$release_dir/"
+          cat release/*.sha256 > "$release_dir/SHA256SUMS"
+          HOME="$smoke_home" \
+          HARNESS_INSTALL_DIR="$install_dir" \
+          HARNESS_STATE_DIR="$state_dir" \
+          HARNESS_RELEASE_BASE="file://$release_root" \
+          HARNESS_VERSION="$VERSION" \
+          HARNESS_TARGET="${{ matrix.target }}" \
+          HARNESS_NONINTERACTIVE=1 \
+            sh scripts/install.sh
+          test "$("$install_dir/harness" --version)" = "$VERSION"
+          HARNESS_TEST_MANIFEST="$state_dir/installation.json" \
+            uv run python -c 'import json, os; from pathlib import Path; p = Path(os.environ["HARNESS_TEST_MANIFEST"]); value = json.loads(p.read_text()); value["version"] = "0.0.0"; p.write_text(json.dumps(value) + "\n")'
+          HARNESS_INSTALL_MANIFEST="$state_dir/installation.json" \
+          HARNESS_TARGET="${{ matrix.target }}" \
+            "$install_dir/harness" self update --version "$VERSION" --json
+          mkdir -p "$state_dir/projects/release-gate"
+          printf 'preserve\n' > "$state_dir/projects/release-gate/record.txt"
+          HARNESS_INSTALL_MANIFEST="$state_dir/installation.json" \
+            "$install_dir/harness" self uninstall --yes --json
+          test -f "$state_dir/projects/release-gate/record.txt"
+          test ! -e "$install_dir/harness"
+          test ! -e "$state_dir/runtime"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [quality-gate, build-standalone]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: standalone-*
+          path: release
+          merge-multiple: true
+      - name: Assemble checksums and installer
+        shell: bash
+        run: |
+          find release -name '*.sha256' -type f -exec cat {} + | sort -k2 > release/SHA256SUMS
+          find release -name '*.sha256' -type f -delete
+          cp scripts/install.sh release/install.sh
+          sha256sum release/install.sh >> release/SHA256SUMS
+      - name: Attest release subjects
+        uses: actions/attest@v4
+        with:
+          subject-checksums: release/SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes

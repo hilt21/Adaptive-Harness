@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 _SCHEMA_FILES = {
     "capabilities": "capabilities-1.0.schema.json",
     "config": "config-1.0.schema.json",
+    "installation": "installation-1.0.schema.json",
     "module-manifest": "module-manifest-1.0.schema.json",
     "modules-lock": "modules-lock-1.0.schema.json",
     "task-envelope": "task-envelope-1.0.schema.json",

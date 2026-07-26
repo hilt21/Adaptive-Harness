@@ -64,7 +64,7 @@ Adaptive Harness 将二者分离：最小内核只负责治理和事实；规划
 
 ### 6.1 新仓库初始化
 
-用户先通过 `pipx` 或 `uv tool` 安装 Adaptive Harness，再在新项目执行 `harness init`。系统扫描项目与客户端，匹配模型能力档案，生成最小内核配置、Agent 指令接入块、可选模块建议和未启用模板清单。用户查看配置、成本、权限和全部文件 diff 后确认写入。
+用户先通过一条官方安装命令把自包含 Adaptive Harness CLI 安装为当前用户全局可用的 `harness` 命令，再在新项目执行 `harness init`。安装 Runtime 不扫描或修改当前仓库。系统扫描项目与客户端，匹配模型能力档案，生成最小内核配置、Agent 指令接入块、可选模块建议和未启用模板清单。用户查看配置、成本、权限和全部文件 diff 后确认写入。
 
 ### 6.2 已有仓库迁移
 
@@ -93,6 +93,7 @@ Agent 收到开发请求后，adapter 自动创建 draft Task Envelope。Runtime
 - feedback `off/minimal/research`。
 - failure taxonomy 与建议成熟度模型。
 - macOS、Linux；WSL2 experimental。
+- macOS/Linux `arm64` 与 `x86_64` 自包含发行构件和当前用户级安装器。
 - 英文协议，英文/简体中文 CLI。
 
 ### 7.2 非目标
@@ -248,7 +249,18 @@ Fast/Standard/Controlled 不作为安全内核，只能是可选解释标签。G
 
 ### 12.1 产品安装
 
-正式发行通过 PyPI 提供，推荐使用隔离的 CLI 安装方式：
+正式发行的首选渠道是 GitHub Releases 中版本化、带 checksum 与签名证明的自包含 CLI。官方安装脚本根据 OS、CPU 和 libc 选择构件，默认安装到当前用户的 `~/.local/bin/harness`，不要求预装 Python、`pipx`、`uv` 或管理员权限：
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh | sh
+```
+
+安装脚本必须保持短小、可审查，并提供下载后检查再执行的两步替代方式。它只能下载版本化构件，必须在原子替换前验证 SHA-256；正式 Release 同时发布可验证的构建来源证明。校验失败必须终止，不得回退到其他来源。用户可显式固定版本。默认安装范围是当前用户；system-wide 安装是显式高级选项。
+
+若 `~/.local/bin` 不在 `PATH`，交互安装先展示目标 shell 配置与受管区块并经确认后写入；非交互安装不修改 shell 配置，只输出精确指引。重复安装和 PATH 修改必须幂等。安装完成后执行 `harness --version` 自检，但不得扫描当前目录、执行 `harness init` 或写入仓库。
+
+PyPI wheel 继续作为高级用户、下游打包者和开发者渠道：
 
 ```sh
 pipx install adaptive-harness
@@ -257,6 +269,8 @@ uv tool install adaptive-harness
 ```
 
 源码开发可使用 editable install。安装后，`harness --help`、`harness init` 和 `harness doctor` 必须可直接执行。Runtime、可信执行器、官方 adapter、内置模块与模板属于已安装包，不复制到每个用户仓库。
+
+Linux 安装器探测 Bubblewrap 和 user namespace，但不得自动使用 `sudo` 或系统包管理器安装依赖。缺失时必须说明基础 CLI 与 `observe` 可用、`enforced` 不可用，并提供用户确认后执行的发行版安装指引。只有客户端拦截与 OS sandbox 都通过当前主机验证时才能标记 `enforced`。
 
 ### 12.2 初始化流程
 
@@ -510,12 +524,15 @@ harness template list|render
 harness feedback show|mode
 harness suggest
 harness config explain|diff|apply
-harness storage status|prune|pin
+harness storage status|prune|pin|mode|migrate
 harness export
 harness upgrade check|plan|apply|rollback
+harness self update|uninstall
 ```
 
 所有命令必须支持人类摘要和稳定 JSON 输出、稳定 exit code、artifact 引用和 `--verbose`。修改命令先显示 canonical 配置与受管投影的完整 diff，再以可恢复事务应用。不能提供直接编辑 canonical record 的入口。
+
+`harness self update|uninstall` 只管理官方自包含 Runtime。Runtime 不后台检查或自动升级；显式更新必须验证正式构件并原子替换，失败时恢复上一版本。`harness upgrade` 只管理当前仓库配置与受管投影。pipx、uv 或 PyPI 安装必须交由原包管理器更新和卸载。Runtime 卸载默认保留本地数据与所有仓库配置；彻底删除数据需要显式 `--purge-data` 和二次确认。
 
 ## 18. 数据与存储
 
@@ -525,7 +542,11 @@ harness upgrade check|plan|apply|rollback
 
 已安装包保存 Runtime、可信执行器、官方 adapter、内置模块与模板源码。本地数据目录保存 Project Profile、Task Envelope、record、episode、日志、指标、反馈、缓存和含机器路径的临时 shim。运行时产物不得写入已提交的接入投影。
 
-默认位置：`~/.local/share/harness/`；可通过配置改变。项目以 repository identity 隔离，同一仓库不同 worktree 共享项目统计但隔离任务状态。
+默认位置遵循 XDG 数据目录，未配置时为 `~/.local/share/harness/`。项目以 repository identity 隔离，同一仓库不同 worktree 共享项目统计但隔离任务状态。
+
+用户可为当前 clone 显式选择高级 `repository-local` 模式。该选择保存在本地 Git 配置中，不写入可提交的 canonical 配置，也不进入首次 `init` 问答。运行数据保存到 Git common directory 下的 `adaptive-harness/`，普通仓库通常为 `.git/adaptive-harness/`；不得写入工作区 `.harness/`、污染 Git diff 或向普通 capability 暴露记录写权限。linked worktree 共享该位置，独立 clone 各自选择。
+
+存储模式切换必须先拒绝活动、blocked 或等待审批的任务，展示源、目标、记录数、大小和冲突。Apply 先复制全部数据并验证完整性，再原子切换本地模式；默认保留源副本供回滚。目标已有记录时不得自动合并，失败或中断后继续使用原位置。`--data-root` 只用于测试、CI 和故障排查，不是持久化项目配置。
 
 ### 18.2 保留策略
 
@@ -578,9 +599,10 @@ MVP 不声称对抗已经控制同一系统用户的恶意攻击者，不替代 
 
 ## 23. 平台与国际化
 
-- 正式支持 macOS、Linux。
+- 正式自包含构件支持 macOS `arm64`/`x86_64` 与 glibc Linux `arm64`/`x86_64`。
+- Alpine/musl 可使用 Python wheel，但不属于首版自包含构件范围。
 - WSL2 experimental；Windows 原生后置。
-- CI 覆盖 Ubuntu LTS、稳定 macOS、Python 3.12/3.13。
+- CI 覆盖 Ubuntu LTS、稳定 macOS、两种 CPU 架构、Python 3.12/3.13。
 - 协议、配置、error code 使用英文。
 - CLI 人类输出支持 `en-US` 与 `zh-CN`。
 - 日志原文不翻译；adapter 不能依赖自然语言解析。
@@ -588,6 +610,8 @@ MVP 不声称对抗已经控制同一系统用户的恶意攻击者，不替代 
 ## 24. 版本、升级与回滚
 
 - Runtime 使用语义化版本。
+- 自包含 Runtime 只在用户执行 `harness self update` 时联网；不后台检查或自动更新。
+- Runtime 更新保留上一构件并原子替换；项目配置迁移仍由 `harness upgrade` 独立计划和应用。
 - config、capabilities、record 分别声明 schema version。
 - modules.lock 固定来源、版本与 hash。
 - 不兼容升级必须阻止启动，不得忽略未知字段。
@@ -639,7 +663,7 @@ docs/
 
 ### F-001 初始化与 Doctor
 
-验收：发行包能在干净隔离环境安装并提供 `harness` 命令；Node 和 Python fixture 能生成三个 canonical 配置文件及所选客户端的最小接入投影；用户确认前不写入；重复初始化幂等；多文件提交失败或中断后全量恢复；doctor 检测 schema、客户端、module hash、受管投影漂移和 workspace。
+验收：受支持的干净主机能以一条命令安装经过校验的当前用户级自包含构件，无需 Python、额外 Python 包管理器或 `sudo`，并在新 shell 与任意仓库提供 `harness` 命令；安装不修改仓库。Node 和 Python fixture 能生成三个 canonical 配置文件及所选客户端的最小接入投影；用户确认前不写入；重复初始化幂等；多文件提交失败或中断后全量恢复；doctor 检测 schema、客户端、module hash、受管投影漂移、workspace 与 enforced sandbox 前置条件。
 
 ### F-002 Task Envelope 与状态存储
 
@@ -675,7 +699,7 @@ docs/
 
 ### F-010 升级、存储与导出
 
-验收：版本兼容、事务式升级/回滚、分层清理、pin、脱敏导出和零遥测默认可验证。
+验收：Runtime 自更新与项目配置升级边界清晰；版本兼容、事务式升级/回滚、分层清理、pin、脱敏导出和零遥测默认可验证。默认用户数据目录按 repository identity 隔离；当前 clone 可显式切换 Git common directory 存储；迁移拒绝活动任务和目标冲突，复制验证后原子切换并默认保留源副本。
 
 ## 27. 开发顺序
 
@@ -693,7 +717,8 @@ docs/
 必须完成：
 
 - 新 Node/Python 仓库初始化；
-- 从正式构建产物隔离安装 CLI；
+- 从正式签名构建产物执行无 Python 前置的当前用户级安装、版本固定、自更新和保留数据的卸载；
+- macOS/Linux `arm64` 与 `x86_64` 构件、checksum、来源证明和安装后 smoke test；
 - `AGENTS.md`/`CLAUDE.md` 接入块的创建、幂等更新、漂移检测和卸载；
 - 普通修复任务；
 - capability 升级与作用域审批；
@@ -704,6 +729,7 @@ docs/
 - 至少三个真实任务的渐进加载验证；
 - Linux/macOS E2E；
 - config 升级与回滚。
+- 默认与 repository-local 存储、迁移中断/冲突/回滚。
 
 安全 Gate 必须 100% 通过，不能用风险豁免：错误 SHA/worktree、lease 冲突、未声明写入/网络/secret/生产操作、approval 复用、coverage 缺失、diff 越界、artifact 逃逸、record 损坏、日志未脱敏和中断恢复。
 
@@ -714,6 +740,7 @@ docs/
 - 模块推荐造成上下文膨胀：三级加载、预算、Trial 和自动卸载。
 - 反馈归因错误：固定 taxonomy、最早主因、证据成熟度和用户确认。
 - 配置复杂：仅三个 canonical 状态文件；接入投影必须可解释、可重建，并由 explain/diff 展示。
+- 安装供应链：版本化构件、checksum、来源证明、平台矩阵 smoke test、原子替换和上一版本回滚。
 - 插件供应链：MVP 仅 builtin/local、hash lock、进程隔离和权限声明。
 - 用户关闭反馈：内核不依赖反馈；minimal 零模型调用；明确成本。
 
@@ -738,7 +765,7 @@ docs/
 ## 31. 开源与分发
 
 - Apache-2.0。
-- PyPI 与 GitHub Releases。
+- GitHub Releases 提供自包含构件、安装脚本、checksum、签名来源证明与变更日志；PyPI 提供通用 wheel 与 sdist 备选渠道。
 - Runtime、CLI、内置模块、模板、adapter、schema 和 integration protocol 开源。
 - 官方模块发布包含签名、兼容矩阵和变更日志。
 - 未来商业能力围绕团队控制面、托管指标和企业支持，不限制本地核心。

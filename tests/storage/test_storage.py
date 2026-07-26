@@ -1,7 +1,22 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Thread
+
+import pytest
 
 from adaptive_harness.storage import StorageItem, StorageManager
+from adaptive_harness.storage.location import project_data_lock
+from tests.storage_support import committed_storage_locator
+
+
+def _manager(tmp_path: Path) -> StorageManager:
+    locator = committed_storage_locator(
+        tmp_path / "project", tmp_path / "data"
+    )
+    return StorageManager(
+        locator.location().project_data,
+        storage_locator=locator,
+    )
 
 
 def _register_file(
@@ -29,7 +44,7 @@ def _register_file(
 
 
 def test_layered_retention_protects_active_and_pinned_items(tmp_path: Path) -> None:
-    manager = StorageManager(tmp_path, "repo-1")
+    manager = _manager(tmp_path)
     old_artifact = _register_file(
         manager, item_id="old-artifact", category="artifact", age_days=8
     )
@@ -64,7 +79,7 @@ def test_layered_retention_protects_active_and_pinned_items(tmp_path: Path) -> N
 
 
 def test_feedback_and_risk_items_use_longer_retention_tiers(tmp_path: Path) -> None:
-    manager = StorageManager(tmp_path, "repo-1")
+    manager = _manager(tmp_path)
     minimal = _register_file(
         manager, item_id="minimal", category="minimal_episode", age_days=31
     )
@@ -81,3 +96,48 @@ def test_feedback_and_risk_items_use_longer_retention_tiers(tmp_path: Path) -> N
     assert not minimal.exists()
     assert research.exists()
     assert risk.exists()
+
+
+def test_storage_writes_wait_for_project_data_lock(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    waiting = Event()
+    written = Event()
+
+    def register() -> None:
+        waiting.set()
+        manager.register(
+            StorageItem(
+                "record-1",
+                "record",
+                "records/record-1.json",
+                "2026-07-16T00:00:00+00:00",
+                "completed",
+            )
+        )
+        written.set()
+
+    with project_data_lock(manager.root):
+        thread = Thread(target=register)
+        thread.start()
+        assert waiting.wait(1)
+        assert not written.wait(0.1)
+    thread.join(timeout=1)
+
+    assert written.is_set()
+
+
+def test_storage_writer_requires_clone_binding(tmp_path: Path) -> None:
+    manager = StorageManager(tmp_path, "repo-1")
+
+    with pytest.raises(ValueError, match="storage locator is required"):
+        manager.status()
+    with pytest.raises(ValueError, match="storage locator is required"):
+        manager.register(
+            StorageItem(
+                "record-1",
+                "record",
+                "records/record-1.json",
+                "2026-07-16T00:00:00+00:00",
+                "completed",
+            )
+        )

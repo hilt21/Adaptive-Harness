@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from functools import wraps
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Concatenate, Protocol, cast
 
 from adaptive_harness import __version__
 from adaptive_harness.core.envelope import Acceptance, Requirement, TaskEnvelope
@@ -20,25 +22,115 @@ from adaptive_harness.core.gateway import (
     ScopedApproval,
     SideEffect,
 )
-from adaptive_harness.core.store import TaskRecord, TaskStore
+from adaptive_harness.core.store import (
+    TaskAlreadyExistsError,
+    TaskRecord,
+    TaskStore,
+)
 from adaptive_harness.core.verifier import VerificationReport, Verifier
 from adaptive_harness.core.workspace import GitWorkspace
 from adaptive_harness.modules import ModuleManager
 from adaptive_harness.schemas import load_capabilities, validator_for
+from adaptive_harness.storage.location import (
+    StorageLocator,
+    project_data_lock,
+    resolve_project_data,
+)
+
+
+class _LockableService(Protocol):
+    _storage_locator: StorageLocator
+    _project_data_root: Path
+
+    def _validate_storage_binding(self) -> None: ...
+
+
+def _locked_storage_operation[ServiceT: _LockableService, **P, R](
+    method: Callable[Concatenate[ServiceT, P], R],
+) -> Callable[Concatenate[ServiceT, P], R]:
+    @wraps(method)
+    def locked(
+        self: ServiceT, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        with self._storage_locator.operation_lock():
+            self._validate_storage_binding()
+            with project_data_lock(self._project_data_root):
+                return method(self, *args, **kwargs)
+
+    return cast(Callable[Concatenate[ServiceT, P], R], locked)
 
 
 class TaskService:
     """Create and operate tasks without exposing record mutation primitives."""
 
-    def __init__(self, root: Path, data_root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        data_root: Path | None = None,
+        *,
+        project_data: Path | None = None,
+        legacy_project_data: Path | None = None,
+        force_user_data: bool = False,
+    ) -> None:
         self.root = Path(root).resolve()
-        self.data_root = Path(data_root).resolve()
         self.workspace = GitWorkspace(self.root)
-        snapshot = self.workspace.snapshot()
-        self.project_data = self.data_root / "projects" / snapshot.repository_id
+        if project_data is None:
+            if data_root is None:
+                raise ValueError("data root is required")
+            self.data_root = Path(data_root).resolve()
+            self._storage_locator = StorageLocator(self.root, self.data_root)
+            location = self._storage_locator.location(
+                force_user_data=force_user_data
+            )
+            self.project_data = location.task_data
+            resolved_legacy = location.legacy_task_data
+            self._bound_task_data = location.task_data
+            self._project_data_root = location.project_data
+        else:
+            if data_root is None:
+                raise ValueError("data root is required with explicit project data")
+            self.project_data = resolve_project_data(
+                data_root,
+                self.workspace.snapshot().repository_id,
+                project_data,
+            )
+            self.data_root = Path(data_root).resolve()
+            self._storage_locator = StorageLocator(self.root, self.data_root)
+            self._project_data_root = self._storage_locator.location(
+                force_user_data=force_user_data
+            ).project_data
+            resolved_legacy = (
+                Path(legacy_project_data).resolve()
+                if legacy_project_data is not None
+                else None
+            )
+            self._bound_task_data = self.project_data
         self.store = TaskStore(self.project_data)
+        self.legacy_store = (
+            TaskStore(resolved_legacy)
+            if resolved_legacy is not None
+            and resolved_legacy != self.project_data
+            else None
+        )
         self.artifact_root = self.project_data / "artifacts"
+        self.legacy_artifact_root = (
+            resolved_legacy / "artifacts"
+            if resolved_legacy is not None and self.legacy_store is not None
+            else None
+        )
+        self._force_user_data = force_user_data
 
+    def _validate_storage_binding(self) -> None:
+        location = self._storage_locator.location(
+            force_user_data=self._force_user_data
+        )
+        valid_locations = {location.task_data}
+        if location.legacy_task_data is not None:
+            valid_locations.add(location.legacy_task_data)
+        if self._bound_task_data not in valid_locations:
+            raise ValueError("storage placement changed; recreate TaskService")
+
+    @_locked_storage_operation
     def start(
         self,
         *,
@@ -89,6 +181,8 @@ class TaskService:
             for index, capability_id in enumerate(selected, start=1)
         )
         identifier = task_id or _task_id()
+        if self._legacy_record_matches_worktree(identifier):
+            raise TaskAlreadyExistsError(f"task already exists: {identifier}")
         envelope = TaskEnvelope(
             schema_version="1.0",
             task_id=identifier,
@@ -124,9 +218,11 @@ class TaskService:
             )
         return record
 
+    @_locked_storage_operation
     def show(self, task_id: str) -> TaskRecord:
-        return self.store.load(task_id)
+        return self._store_for(task_id).load(task_id)
 
+    @_locked_storage_operation
     def amend(
         self,
         task_id: str,
@@ -135,7 +231,8 @@ class TaskService:
         add_scope: tuple[str, ...] = (),
         add_capabilities: tuple[str, ...] = (),
     ) -> TaskRecord:
-        current = self.store.load(task_id).current_envelope
+        store = self._store_for(task_id)
+        current = store.load(task_id).current_envelope
         changes: dict[str, Any] = {}
         if goal is not None:
             changes["goal"] = goal
@@ -172,11 +269,13 @@ class TaskService:
             changes["acceptances"] = tuple(acceptances)
         if not changes:
             raise ValueError("task amendment has no changes")
-        return self.store.amend(task_id, **changes)
+        return store.amend(task_id, **changes)
 
+    @_locked_storage_operation
     def cancel(self, task_id: str, *, reason: str) -> TaskRecord:
-        return self.store.cancel(task_id, reason=reason)
+        return self._store_for(task_id).cancel(task_id, reason=reason)
 
+    @_locked_storage_operation
     def verify(
         self,
         task_id: str,
@@ -184,9 +283,10 @@ class TaskService:
         accept_risk: bool = False,
         risk_reason: str | None = None,
     ) -> VerificationReport:
+        store = self._store_for(task_id)
         return Verifier(
-            store=self.store,
-            artifact_root=self.artifact_root,
+            store=store,
+            artifact_root=self._artifact_root_for(store),
             workspace_probe=self.workspace.snapshot,
             diff_probe=self.workspace.diff_for,
         ).verify(
@@ -207,7 +307,7 @@ class TaskService:
             raise ValueError("approval max_uses must be positive")
         if valid_for_minutes < 1:
             raise ValueError("approval validity must be positive")
-        record = self.store.load(task_id)
+        record = self._store_for(task_id).load(task_id)
         capability = self._capability(capability_id)
         if capability_id not in record.current_envelope.requested_capabilities:
             raise ValueError(
@@ -237,6 +337,7 @@ class TaskService:
             expires_at=datetime.now(UTC) + timedelta(minutes=valid_for_minutes),
         )
 
+    @_locked_storage_operation
     def grant_approval(self, approval: ScopedApproval) -> TaskRecord:
         current = self.plan_approval(
             approval.task_id,
@@ -254,27 +355,30 @@ class TaskService:
             or current.environment is not approval.environment
         ):
             raise ValueError("approval scope changed before confirmation")
-        return self.store.append_event(
+        store = self._store_for(approval.task_id)
+        return store.append_event(
             approval.task_id,
             "approval.granted",
             _approval_payload(approval),
         )
 
+    @_locked_storage_operation
     def run_capability(self, task_id: str, capability_id: str) -> CommandResult:
+        store = self._store_for(task_id)
         capabilities = self._capabilities()
         authorization = CapabilityGateway(
-            store=self.store,
+            store=store,
             capabilities=capabilities,
             policy=ProjectPolicy(),
             workspace_probe=self.workspace.snapshot,
         ).authorize(
             task_id,
             capability_id,
-            approvals=self._recorded_approvals(task_id, capability_id),
+            approvals=self._recorded_approvals(store, task_id, capability_id),
         )
         return Executor(
-            store=self.store,
-            artifact_root=self.artifact_root,
+            store=store,
+            artifact_root=self._artifact_root_for(store),
             workspace_probe=self.workspace.snapshot,
             limits=ExecutionLimits(),
         ).execute(authorization)
@@ -301,10 +405,10 @@ class TaskService:
         raise ValueError(f"unknown capability: {capability_id}")
 
     def _recorded_approvals(
-        self, task_id: str, capability_id: str
+        self, store: TaskStore, task_id: str, capability_id: str
     ) -> tuple[ScopedApproval, ...]:
         approvals: list[ScopedApproval] = []
-        for event in self.store.load(task_id).events:
+        for event in store.load(task_id).events:
             if (
                 event.type != "approval.granted"
                 or event.data.get("capability_id") != capability_id
@@ -312,6 +416,34 @@ class TaskService:
                 continue
             approvals.append(_approval_from_payload(event.data))
         return tuple(approvals)
+
+    def _legacy_record_matches_worktree(self, task_id: str) -> bool:
+        if self.legacy_store is None:
+            return False
+        path = self.legacy_store.record_path(task_id)
+        if not path.exists():
+            return False
+        record = self.legacy_store.load(task_id)
+        return (
+            record.current_envelope.worktree_path
+            == self.workspace.snapshot().worktree_path
+        )
+
+    def _store_for(self, task_id: str) -> TaskStore:
+        current_exists = self.store.record_path(task_id).exists()
+        legacy_matches = self._legacy_record_matches_worktree(task_id)
+        if current_exists and legacy_matches:
+            raise ValueError(
+                f"task exists in both current and legacy storage: {task_id}"
+            )
+        if legacy_matches and self.legacy_store is not None:
+            return self.legacy_store
+        return self.store
+
+    def _artifact_root_for(self, store: TaskStore) -> Path:
+        if store is self.legacy_store and self.legacy_artifact_root is not None:
+            return self.legacy_artifact_root
+        return self.artifact_root
 
 
 def _task_id() -> str:

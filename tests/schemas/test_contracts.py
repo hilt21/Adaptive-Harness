@@ -53,10 +53,41 @@ def make_envelope(tmp_path: Path) -> TaskEnvelope:
 
 
 @pytest.mark.parametrize(
-    "schema_name", ["task-envelope", "task-record", "capabilities"]
+    "schema_name", ["task-envelope", "task-record", "capabilities", "installation"]
 )
 def test_published_schema_is_valid_draft_2020_12(schema_name: str) -> None:
     Draft202012Validator.check_schema(load_schema(schema_name))
+
+
+def test_installation_manifest_matches_its_published_schema(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    document: dict[str, Any] = {
+        "schema_version": "1.0",
+        "channel": "standalone",
+        "version": "0.1.0",
+        "binary_path": str(tmp_path / "bin/harness"),
+        "data_root": str(data_root),
+        "runtime_path": str(data_root / "runtime/current"),
+        "release_base": "https://example.invalid/releases/download",
+        "release_repository": "owner/project",
+        "path_profile": None,
+    }
+
+    validator_for("installation").validate(document)
+
+    document["version"] = "1.2.3-rc.1+build.5"
+    validator_for("installation").validate(document)
+
+    for invalid_version in ("01.2.3", "1.2.3-rc..1"):
+        document["version"] = invalid_version
+        with pytest.raises(ValidationError):
+            validator_for("installation").validate(document)
+
+    document["version"] = "0.1.0"
+
+    document["unknown"] = True
+    with pytest.raises(ValidationError):
+        validator_for("installation").validate(document)
 
 
 def test_task_envelope_matches_its_published_schema(tmp_path: Path) -> None:
