@@ -795,12 +795,12 @@ def test_release_pipeline_covers_supported_targets_and_attests_checksums() -> No
         "linux-arm64",
         "linux-x86_64",
         "macos-arm64",
-        "macos-x86_64",
     ):
         assert target in workflow
+    assert "macos-x86_64" not in workflow
     assert "actions/attest@v4" in workflow
     assert "subject-checksums: release/SHA256SUMS" in workflow
-    assert 'runner: macos-14-large' in workflow
+    assert 'runner: macos-14-large' not in workflow
     assert 'runner: macos-13' not in workflow
     assert "scripts/install.sh" in workflow
     assert "(cd release && sha256sum install.sh >> SHA256SUMS)" in workflow

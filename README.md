@@ -2,7 +2,7 @@
 
 Adaptive Harness is a local-first, client-independent governance runtime for software-development agents. It binds each task to a real Git worktree and base SHA, authorizes typed capabilities, captures trusted command evidence, and applies a completion gate. Optional modules and templates cannot weaken those kernel invariants.
 
-The MVP supports macOS and glibc Linux on arm64 and x86_64. Generic CLI and Codex integrations are explicitly `observe`; Claude Code uses a project `PreToolUse` hook and an OS-sandboxed executor for an end-to-end verified `enforced` path. The product requirements remain the scope and architecture source of truth: [docs/adaptive-harness-prd.md](docs/adaptive-harness-prd.md).
+The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. macOS x86_64 standalone publication requires a self-hosted Intel runner and is not included in the current GitHub-hosted release matrix. Generic CLI and Codex integrations are explicitly `observe`; Claude Code uses a project `PreToolUse` hook and an OS-sandboxed executor for an end-to-end verified `enforced` path. The product requirements remain the scope and architecture source of truth: [docs/adaptive-harness-prd.md](docs/adaptive-harness-prd.md).
 
 ## Install
 
