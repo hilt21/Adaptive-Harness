@@ -44,7 +44,7 @@ jobs:
             target: linux-x86_64
           - runner: ubuntu-22.04-arm
             target: linux-arm64
-          - runner: macos-13
+          - runner: macos-14-large
             target: macos-x86_64
           - runner: macos-15
             target: macos-arm64
