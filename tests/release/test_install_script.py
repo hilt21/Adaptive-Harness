@@ -719,6 +719,8 @@ def test_release_pipeline_covers_supported_targets_and_attests_checksums() -> No
         assert target in workflow
     assert "actions/attest@v4" in workflow
     assert "subject-checksums: release/SHA256SUMS" in workflow
+    assert 'runner: macos-13' in workflow
+    assert 'runner: macos-15-intel' not in workflow
     assert "scripts/install.sh" in workflow
     assert "(cd release && sha256sum install.sh >> SHA256SUMS)" in workflow
     assert "sha256sum release/install.sh >> release/SHA256SUMS" not in workflow

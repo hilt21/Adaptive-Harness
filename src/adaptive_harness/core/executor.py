@@ -534,6 +534,8 @@ def _sandbox_command(
             "/",
             "--proc",
             "/proc",
+            "--dev",
+            "/dev",
             "--tmpfs",
             "/tmp",
             "--bind",

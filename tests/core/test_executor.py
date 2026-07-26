@@ -292,6 +292,7 @@ def test_linux_sandbox_mounts_private_procfs_after_root_bind(
     assert _contains_sequence(
         command, ("--ro-bind", "/", "/", "--proc", "/proc")
     )
+    assert _contains_sequence(command, ("--dev", "/dev"))
 
 
 def test_linux_sandbox_rebinds_tmp_worktree_after_private_tmpfs(
