@@ -43,7 +43,7 @@ def test_compatible_upgrade_creates_recovery_and_exact_rollback(
 
     assert status.compatible is True
     assert status.needs_upgrade is True
-    assert '"runtime_version": "0.1.0"' in plan.diff()
+    assert f'"runtime_version": "{__version__}"' in plan.diff()
     manager.apply(plan)
     upgraded = json.loads(config_path.read_text(encoding="utf-8"))
     assert upgraded["runtime_version"] == __version__

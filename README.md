@@ -19,7 +19,7 @@ To install a fixed release instead of `latest`, set its SemVer explicitly:
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh \
-  | HARNESS_VERSION=0.1.0 sh
+  | HARNESS_VERSION=0.1.1 sh
 ```
 
 The installer selects the platform artifact, verifies its checksum, and installs `harness` in `~/.local/bin`. If that directory is not on `PATH`, an interactive install offers a reviewed shell-profile change; a non-interactive install prints the required command without editing the profile.
@@ -37,7 +37,7 @@ expected=$(awk '$2 == "install.sh" { print $1 }' SHA256SUMS)
 actual=$(shasum -a 256 install.sh | awk '{ print $1 }')
 test -n "$expected" && test "$actual" = "$expected"
 less install.sh
-HARNESS_VERSION=0.1.0 sh install.sh
+HARNESS_VERSION=0.1.1 sh install.sh
 ```
 
 Python packaging remains available as an alternative for users who already manage isolated CLI tools:
