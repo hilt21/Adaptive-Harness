@@ -1,0 +1,24 @@
+[project]
+name = "adaptive-harness-quickstart"
+version = "0.1.0"
+description = "A deliberately broken Python project for the Adaptive Harness quickstart"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+]
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "-p",
+  "no:cacheprovider",
+]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.uv]
+offline = true

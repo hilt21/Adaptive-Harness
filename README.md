@@ -2,6 +2,12 @@
 
 Adaptive Harness is a local-first, client-independent governance runtime for software-development agents. It binds each task to a real Git worktree and base SHA, authorizes typed capabilities, captures trusted command evidence, and applies a completion gate. Optional modules and templates cannot weaken those kernel invariants.
 
+## Try it in 5 minutes
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hilt21/Adaptive-Harness?quickstart=1)
+
+After the Codespace is ready, the [Python quickstart](examples/python-quickstart/README.md) takes about five minutes to preserve a failing test as evidence, record a successful fix, and pass the completion gate. One additional minute enables progressive TDD guidance and shows it activate only for the next matching task. The same Dev Container works locally in VS Code.
+
 The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. macOS x86_64 standalone publication requires a self-hosted Intel runner and is not included in the current GitHub-hosted release matrix. Generic CLI and Codex integrations are explicitly `observe`; Claude Code uses a project `PreToolUse` hook and an OS-sandboxed executor for an end-to-end verified `enforced` path. The product requirements remain the scope and architecture source of truth: [docs/adaptive-harness-prd.md](docs/adaptive-harness-prd.md).
 
 ## Install

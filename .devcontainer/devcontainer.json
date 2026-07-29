@@ -1,0 +1,22 @@
+{
+  "name": "Adaptive Harness Quickstart",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "postCreateCommand": [
+    "sh",
+    ".devcontainer/post-create.sh"
+  ],
+  "waitFor": "postCreateCommand",
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/home/vscode/.local/bin"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ]
+    }
+  }
+}

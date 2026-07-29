@@ -1,0 +1,31 @@
+{
+  "adapter": {
+    "id": "generic",
+    "mode": "observe"
+  },
+  "feedback": {
+    "analysis_policy": "on_demand",
+    "include_token_usage": true,
+    "mode": "minimal",
+    "retention_days": 30
+  },
+  "managed_projections": [],
+  "model_profile": {
+    "id": "unknown-conservative",
+    "version": "1.0"
+  },
+  "modules": {
+    "activation_policy": "suggest",
+    "context_budget_tokens": 2000
+  },
+  "policy": {
+    "telemetry_enabled": false,
+    "unknown_operations": "deny_or_approve"
+  },
+  "project_profile": {
+    "fingerprint": "9aae75f29a5268cbff2ac13e6a9cc61d0c45f2f4323b6dc011029d7b9a7c4e7b",
+    "strategy": "deterministic-local"
+  },
+  "runtime_version": "0.1.1",
+  "schema_version": "1.0"
+}

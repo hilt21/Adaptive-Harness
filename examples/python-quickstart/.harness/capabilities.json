@@ -1,0 +1,34 @@
+{
+  "capabilities": [
+    {
+      "approval_policy": "auto",
+      "argv": [
+        "uv",
+        "run",
+        "pytest"
+      ],
+      "cwd": ".",
+      "environment": "test",
+      "id": "project-tests",
+      "listener": false,
+      "max_executions": 2,
+      "network": "none",
+      "read_paths": [
+        "src",
+        "tests"
+      ],
+      "reversibility": "reversible",
+      "side_effects": [
+        "filesystem_read"
+      ],
+      "stop_condition": {
+        "exit_codes": [
+          0
+        ]
+      },
+      "timeout_seconds": 120,
+      "write_paths": []
+    }
+  ],
+  "schema_version": "1.0"
+}

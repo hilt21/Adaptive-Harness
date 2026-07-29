@@ -5,6 +5,23 @@ on:
   pull_request:
 
 jobs:
+  quickstart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: docker build --tag adaptive-harness-quickstart -f .devcontainer/Dockerfile .devcontainer
+      - run: >-
+          docker run --rm
+          --user vscode
+          --mount type=bind,source="$PWD",target=/source,readonly
+          adaptive-harness-quickstart
+          sh /source/.devcontainer/smoke-post-create.sh
+      - run: uv sync --dev --locked
+      - run: uv run python scripts/smoke-quickstart.py
+
   quality:
     strategy:
       fail-fast: false
