@@ -1,14 +1,177 @@
 # Adaptive Harness
 
-Adaptive Harness is a local-first, client-independent governance runtime for software-development agents. It binds each task to a real Git worktree and base SHA, authorizes typed capabilities, captures trusted command evidence, and applies a completion gate. Optional modules and templates cannot weaken those kernel invariants.
+**Keep your coding client. Add verifiable governance.**
+
+Adaptive Harness is a local-first governance runtime for software-development
+agents. It works alongside the client you already use—Claude Code, Codex,
+OpenCode, Cursor, or a plain terminal—instead of replacing it with another
+agent workflow.
+
+It adds four guarantees that client prompts alone cannot provide:
+
+- **Stable task identity:** every task is bound to a real Git worktree and base
+  SHA.
+- **Typed capability boundaries:** permissions follow declared side effects,
+  paths, networks, and execution limits—not task names or model intent.
+- **Trusted evidence:** executor results and failures are recorded as evidence;
+  model self-assessment is not accepted as proof.
+- **A real completion gate:** `completed` is available only when current,
+  authorized acceptance evidence satisfies the task.
+
+Canonical policy stays in versioned `.harness/*.json` files, while client
+instructions and hooks remain thin, replaceable projections.
+
+## How it fits
+
+```mermaid
+flowchart LR
+    Claude["Claude Code"] -->|"PreToolUse hook<br/>enforced"| Gateway
+    Codex["Codex"] -.->|"AGENTS.md guidance<br/>observe"| Gateway
+    OpenCode["OpenCode"] -.->|"AGENTS.md guidance<br/>observe"| Gateway
+    Cursor["Cursor"] -.->|"AGENTS.md guidance<br/>observe"| Gateway
+    Gateway["Task Envelope<br/>+ Capability Gateway"] --> Executor["Controlled Executor"]
+    Executor --> Evidence["Append-only evidence"]
+    Evidence --> Verifier["Completion Gate"]
+```
+
+At the client edge, the solid arrow represents verified interception. Dotted
+arrows represent prompt-level guidance: the client can follow the Harness path,
+but the instructions cannot prevent it from bypassing that path.
+
+## Integrate with your existing client
+
+[Install `harness`](#install) first if it is not already available, then choose
+the client you use in the repository. Run `harness integration list` at any
+time to inspect the supported adapters and their verified capability modes.
+
+| Client | Integration level | Project entry point | Mode | Blocks mutating-tool bypasses? |
+| --- | --- | --- | --- | --- |
+| Claude Code | Official adapter | `CLAUDE.md` + `.claude/settings.json` | `enforced` when healthy | Yes, through `PreToolUse` and the controlled executor |
+| Codex | Official adapter | Managed `AGENTS.md` block | `observe` | No—prompt-only |
+| [OpenCode](https://dev.opencode.ai/docs/rules/) | Compatible instructions | Root `AGENTS.md` | `observe` | No—prompt-only |
+| [Cursor](https://docs.cursor.com/context/rules-for-ai) | Compatible instructions | Root `AGENTS.md` | `observe` | No—prompt-only |
+
+OpenCode and Cursor are compatibility paths through the Generic adapter, not
+native adapters in the current MVP.
+
+`AGENTS.md` and `CLAUDE.md` guide client behavior; they are not security
+boundaries. Adaptive Harness uses the word `enforced` only for a verified
+native interceptor, and its controlled executor fails closed when the required
+host sandbox is unavailable.
+
+### Claude Code: native `PreToolUse` enforcement
+
+Run the first command to inspect every proposed file, then apply the same plan:
+
+```bash
+harness init --adapter claude-code
+harness init --adapter claude-code --apply
+harness doctor --verbose
+```
+
+This preserves existing `CLAUDE.md` content, adds a versioned managed block,
+creates the canonical `.harness/` files, and merges the following hook into
+`.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "harness adapter-hook claude-code || exit 2",
+            "statusMessage": "Adaptive Harness policy check",
+            "timeout": 5,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Edit|Write|NotebookEdit|MultiEdit|mcp__.*"
+      }
+    ]
+  }
+}
+```
+
+The hook permits read-only tools, rejects direct mutating tools, and accepts
+only the exact `harness capability run --task … --capability …` launcher.
+Copying the JSON alone is not a complete integration: it does not create the
+canonical task policy or the managed `CLAUDE.md` projection.
+
+Claude Code is `enforced` only while `harness doctor` reports the adapter hook
+and managed projection healthy. Capability execution additionally requires a
+supported host sandbox and fails closed without one. Linux enforcement requires
+Bubblewrap and working user namespaces; otherwise the base CLI and explicit
+`observe` workflows remain available.
+
+### Codex: managed `AGENTS.md`
+
+```bash
+harness init --adapter codex
+harness init --adapter codex --apply
+harness doctor --verbose
+```
+
+Adaptive Harness preserves existing `AGENTS.md` content and adds a small,
+versioned block instructing Codex to start tasks, request capabilities, and
+verify through Harness. The integration is intentionally `observe`: Codex can
+read and follow the instructions, but the file cannot intercept a bypassing
+tool call.
+
+### OpenCode and Cursor: portable `AGENTS.md` instructions
+
+[OpenCode project rules](https://dev.opencode.ai/docs/rules/) and
+[Cursor rules](https://docs.cursor.com/context/rules-for-ai) both support a
+root-level `AGENTS.md`. Initialize the client-independent runtime first:
+
+```bash
+harness init --adapter generic
+harness init --adapter generic --apply
+harness doctor --verbose
+```
+
+Then add this plain Markdown fragment to the repository's existing
+`AGENTS.md`, or create the file if it does not exist:
+
+```md
+## Adaptive Harness
+
+Use Adaptive Harness for repository-changing tasks.
+Start or resume the task through `harness task`, request capability
+escalation through Harness, and run Harness verification before completion.
+Treat Harness task status and executor evidence as authoritative.
+```
+
+This fragment is immediately readable by both clients, but remains a
+prompt-only `observe` integration. Because it is copied manually rather than
+generated as a managed projection, `harness doctor` does not drift-check the
+fragment.
+
+### Switch an initialized project between official adapters
+
+Canonical task policy and evidence do not belong to the client projection.
+Review and apply a projection change without reinitializing the project:
+
+```bash
+harness integration install claude-code
+harness integration install claude-code --apply
+harness doctor --verbose
+```
+
+Use `codex` in place of `claude-code` to switch to the Codex projection. The
+transaction preserves unrelated user content and replaces only
+Harness-managed instructions and native hook settings.
 
 ## Try it in 5 minutes
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/hilt21/Adaptive-Harness?quickstart=1)
 
-After the Codespace is ready, the [Python quickstart](examples/python-quickstart/README.md) takes about five minutes to preserve a failing test as evidence, record a successful fix, and pass the completion gate. One additional minute enables progressive TDD guidance and shows it activate only for the next matching task. The same Dev Container works locally in VS Code.
-
-The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. macOS x86_64 standalone publication requires a self-hosted Intel runner and is not included in the current GitHub-hosted release matrix. Generic CLI and Codex integrations are explicitly `observe`; Claude Code uses a project `PreToolUse` hook and an OS-sandboxed executor for an end-to-end verified `enforced` path. The product requirements remain the scope and architecture source of truth: [docs/adaptive-harness-prd.md](docs/adaptive-harness-prd.md).
+After the Codespace is ready, the
+[Python quickstart](examples/python-quickstart/README.md) takes about five
+minutes to preserve a failing test as evidence, record a successful fix, and
+pass the completion gate. One additional minute enables progressive TDD
+guidance and shows it activate only for the next matching task. The same Dev
+Container works locally in VS Code.
 
 ## Install
 
@@ -54,6 +217,12 @@ pipx install adaptive-harness
 uv tool install adaptive-harness
 ```
 
+The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. macOS
+x86_64 standalone publication requires a self-hosted Intel runner and is not
+included in the current GitHub-hosted release matrix. The
+[product requirements](docs/adaptive-harness-prd.md) remain the scope and
+architecture source of truth.
+
 Linux `enforced` execution also requires Bubblewrap and working user namespaces. The installer reports a missing sandbox dependency but never invokes `sudo` or a system package manager. Base CLI and explicit `observe` operation remain available.
 
 For this source tree, use the development environment:
@@ -73,9 +242,13 @@ harness self uninstall --purge-data
 
 Package-manager installations must be updated and removed with the package manager that installed them.
 
-## Initialize a project
+## Initialize without a client projection
 
-The project must be a Git repository with an initial commit. Deterministic scanning needs a declared test command; for example, a Python project can declare pytest in `pyproject.toml`, while a Node project can declare a test script in `package.json`.
+Use the Generic adapter for a terminal-only workflow, CI, or a client whose
+instruction file you manage manually. The project must be a Git repository
+with an initial commit. Deterministic scanning needs a declared test command;
+for example, a Python project can declare pytest in `pyproject.toml`, while a
+Node project can declare a test script in `package.json`.
 
 Initialization is review-first. The first command prints a complete diff and writes nothing:
 
@@ -85,7 +258,10 @@ harness init --adapter generic --apply
 harness doctor --verbose
 ```
 
-Use `--adapter codex` to create a managed `AGENTS.md` block or `--adapter claude-code` to create a managed `CLAUDE.md` block plus `.claude/settings.json`. Existing user content is preserved. Commit the three canonical files and any selected client projection before starting the first task:
+The Generic adapter creates no client instruction file and is explicitly
+`observe`. To add an official projection later, use `harness integration
+install` as shown above. Commit the three canonical files and any client
+projection you selected before starting the first task:
 
 ```text
 .harness/config.json
