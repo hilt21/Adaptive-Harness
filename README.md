@@ -173,6 +173,20 @@ pass the completion gate. One additional minute enables progressive TDD
 guidance and shows it activate only for the next matching task. The same Dev
 Container works locally in VS Code.
 
+## Contributing
+
+Contributions are welcome:
+
+- Read the [contributing guide](CONTRIBUTING.md) before opening a pull request.
+- Pick a scoped task from the
+  [good first issues](https://github.com/hilt21/Adaptive-Harness/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+- Follow current priorities in the
+  [public roadmap](https://github.com/hilt21/Adaptive-Harness/issues/4).
+
+For substantial behavior or architecture changes, open an issue before
+implementation. The [product requirements](docs/adaptive-harness-prd.md)
+remain the source of truth for MVP scope and safety invariants.
+
 ## Install
 
 Install the published, self-contained CLI for the current user. This does not require Python, a Python package manager, or `sudo`, and it does not modify the current repository:
