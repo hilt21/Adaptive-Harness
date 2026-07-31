@@ -65,6 +65,16 @@ def test_cli_reports_installed_version(capsys: pytest.CaptureFixture[str]) -> No
     assert capsys.readouterr().out.strip() == __version__
 
 
+def test_cli_help_uses_the_collision_resistant_command_name(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(["--help"])
+
+    assert error.value.code == 0
+    assert capsys.readouterr().out.startswith("usage: adp-harness ")
+
+
 def test_runtime_module_is_a_standalone_builder_entrypoint() -> None:
     completed = subprocess.run(
         (sys.executable, "-m", "adaptive_harness", "--version"),

@@ -77,12 +77,12 @@ def main() -> int:
         parser.error("--bundle must contain only regular files and directories")
 
     collect(bundle_root, Path())
-    binary = bundle_root / "harness"
+    binary = bundle_root / "adp-harness"
     if (
-        not any(path == Path("harness") for path, _ in files)
+        not any(path == Path("adp-harness") for path, _ in files)
         or binary.stat().st_mode & 0o111 == 0
     ):
-        parser.error("--bundle must contain an executable harness file")
+        parser.error("--bundle must contain an executable adp-harness file")
 
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)

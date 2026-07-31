@@ -10,7 +10,8 @@ from typing import Any
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _READ_ONLY_TOOLS = {"Read", "Glob", "Grep", "WebSearch", "WebFetch"}
-HOOK_COMMAND = "harness adapter-hook claude-code || exit 2"
+_CONTROLLED_LAUNCHER = "$HOME/.local/bin/adp-harness"
+HOOK_COMMAND = f'"{_CONTROLLED_LAUNCHER}" adapter-hook claude-code || exit 2'
 HOOK_MATCHER = "Bash|Edit|Write|NotebookEdit|MultiEdit|mcp__.*"
 
 
@@ -42,7 +43,7 @@ def decide_pre_tool_use(value: object) -> ClaudeHookDecision:
     if tool_name != "Bash" or not isinstance(tool_input, dict):
         return ClaudeHookDecision(
             False,
-            "mutating tools must execute through `harness capability run`",
+            "mutating tools must execute through `adp-harness capability run`",
         )
     command = tool_input.get("command")
     if not isinstance(command, str):
@@ -52,7 +53,7 @@ def decide_pre_tool_use(value: object) -> ClaudeHookDecision:
     except ValueError:
         return ClaudeHookDecision(False, "Bash command cannot be parsed safely")
     if len(arguments) != 7 or arguments[:3] != [
-        "harness",
+        _CONTROLLED_LAUNCHER,
         "capability",
         "run",
     ]:

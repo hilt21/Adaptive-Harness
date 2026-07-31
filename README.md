@@ -40,8 +40,8 @@ but the instructions cannot prevent it from bypassing that path.
 
 ## Integrate with your existing client
 
-[Install `harness`](#install) first if it is not already available, then choose
-the client you use in the repository. Run `harness integration list` at any
+[Install `adp-harness`](#install) first if it is not already available, then choose
+the client you use in the repository. Run `adp-harness integration list` at any
 time to inspect the supported adapters and their verified capability modes.
 
 | Client | Integration level | Project entry point | Mode | Blocks mutating-tool bypasses? |
@@ -64,9 +64,9 @@ host sandbox is unavailable.
 Run the first command to inspect every proposed file, then apply the same plan:
 
 ```bash
-harness init --adapter claude-code
-harness init --adapter claude-code --apply
-harness doctor --verbose
+adp-harness init --adapter claude-code
+adp-harness init --adapter claude-code --apply
+adp-harness doctor --verbose
 ```
 
 This preserves existing `CLAUDE.md` content, adds a versioned managed block,
@@ -80,7 +80,7 @@ creates the canonical `.harness/` files, and merges the following hook into
       {
         "hooks": [
           {
-            "command": "harness adapter-hook claude-code || exit 2",
+            "command": "\"$HOME/.local/bin/adp-harness\" adapter-hook claude-code || exit 2",
             "statusMessage": "Adaptive Harness policy check",
             "timeout": 5,
             "type": "command"
@@ -94,11 +94,14 @@ creates the canonical `.harness/` files, and merges the following hook into
 ```
 
 The hook permits read-only tools, rejects direct mutating tools, and accepts
-only the exact `harness capability run --task … --capability …` launcher.
+only the exact `"$HOME/.local/bin/adp-harness" capability run --task …
+--capability …` launcher. The absolute user-level path keeps the hook working
+when Claude Code is launched from a GUI that does not inherit your terminal
+`PATH`.
 Copying the JSON alone is not a complete integration: it does not create the
 canonical task policy or the managed `CLAUDE.md` projection.
 
-Claude Code is `enforced` only while `harness doctor` reports the adapter hook
+Claude Code is `enforced` only while `adp-harness doctor` reports the adapter hook
 and managed projection healthy. Capability execution additionally requires a
 supported host sandbox and fails closed without one. Linux enforcement requires
 Bubblewrap and working user namespaces; otherwise the base CLI and explicit
@@ -107,9 +110,9 @@ Bubblewrap and working user namespaces; otherwise the base CLI and explicit
 ### Codex: managed `AGENTS.md`
 
 ```bash
-harness init --adapter codex
-harness init --adapter codex --apply
-harness doctor --verbose
+adp-harness init --adapter codex
+adp-harness init --adapter codex --apply
+adp-harness doctor --verbose
 ```
 
 Adaptive Harness preserves existing `AGENTS.md` content and adds a small,
@@ -125,9 +128,9 @@ tool call.
 root-level `AGENTS.md`. Initialize the client-independent runtime first:
 
 ```bash
-harness init --adapter generic
-harness init --adapter generic --apply
-harness doctor --verbose
+adp-harness init --adapter generic
+adp-harness init --adapter generic --apply
+adp-harness doctor --verbose
 ```
 
 Then add this plain Markdown fragment to the repository's existing
@@ -137,14 +140,14 @@ Then add this plain Markdown fragment to the repository's existing
 ## Adaptive Harness
 
 Use Adaptive Harness for repository-changing tasks.
-Start or resume the task through `harness task`, request capability
+Start or resume the task through `"$HOME/.local/bin/adp-harness" task`, request capability
 escalation through Harness, and run Harness verification before completion.
 Treat Harness task status and executor evidence as authoritative.
 ```
 
 This fragment is immediately readable by both clients, but remains a
 prompt-only `observe` integration. Because it is copied manually rather than
-generated as a managed projection, `harness doctor` does not drift-check the
+generated as a managed projection, `adp-harness doctor` does not drift-check the
 fragment.
 
 ### Switch an initialized project between official adapters
@@ -153,9 +156,9 @@ Canonical task policy and evidence do not belong to the client projection.
 Review and apply a projection change without reinitializing the project:
 
 ```bash
-harness integration install claude-code
-harness integration install claude-code --apply
-harness doctor --verbose
+adp-harness integration install claude-code
+adp-harness integration install claude-code --apply
+adp-harness doctor --verbose
 ```
 
 Use `codex` in place of `claude-code` to switch to the Codex projection. The
@@ -194,7 +197,7 @@ Install the published, self-contained CLI for the current user. This does not re
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh | sh
-harness --version
+adp-harness --version
 ```
 
 To install a fixed release instead of `latest`, set its SemVer explicitly:
@@ -202,10 +205,26 @@ To install a fixed release instead of `latest`, set its SemVer explicitly:
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh \
-  | HARNESS_VERSION=0.1.1 sh
+  | HARNESS_VERSION=0.2.0 sh
 ```
 
-The installer selects the platform artifact, verifies its checksum, and installs `harness` in `~/.local/bin`. If that directory is not on `PATH`, an interactive install offers a reviewed shell-profile change; a non-interactive install prints the required command without editing the profile.
+The installer selects the platform artifact, verifies its checksum, and installs
+`adp-harness` in `~/.local/bin`. If that directory is not available in a clean
+new shell, it shows one small managed change to the default zsh, bash, or fish
+configuration and asks once before writing it atomically. Declining stops the
+installation without leaving a partial Runtime. Open a new terminal after the
+installer finishes; no temporary `export PATH=...` is required.
+
+Non-interactive installation proceeds only when the clean-shell check already
+passes or the caller explicitly sets `HARNESS_CONFIRM_PATH=1`. An unknown
+default shell, an unrelated `adp-harness` elsewhere on `PATH`, or an
+unverifiable file at the target path stops the installer without overwriting
+anything.
+
+If an install, update, rollback, or uninstall process is interrupted, a
+fail-closed lock may remain. The next command prints the exact lock-file path;
+first confirm that no Adaptive Harness lifecycle command is still running,
+then remove only that lock file and retry.
 
 To inspect and verify the installer before executing it, download both release files and compare the published SHA-256 entry:
 
@@ -220,10 +239,11 @@ expected=$(awk '$2 == "install.sh" { print $1 }' SHA256SUMS)
 actual=$(shasum -a 256 install.sh | awk '{ print $1 }')
 test -n "$expected" && test "$actual" = "$expected"
 less install.sh
-HARNESS_VERSION=0.1.1 sh install.sh
+HARNESS_VERSION=0.2.0 sh install.sh
 ```
 
-Python packaging remains available as an alternative for users who already manage isolated CLI tools:
+Python packaging remains an advanced alternative for users who already manage
+isolated CLI tools:
 
 ```bash
 pipx install adaptive-harness
@@ -231,9 +251,10 @@ pipx install adaptive-harness
 uv tool install adaptive-harness
 ```
 
-The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. macOS
-x86_64 standalone publication requires a self-hosted Intel runner and is not
-included in the current GitHub-hosted release matrix. The
+The MVP supports macOS arm64 and glibc Linux on arm64 and x86_64. WSL2 follows
+the Linux path experimentally; native Windows is not supported in `0.2.0`.
+macOS x86_64 standalone publication requires a self-hosted Intel runner and is
+not included in the current GitHub-hosted release matrix. The
 [product requirements](docs/adaptive-harness-prd.md) remain the scope and
 architecture source of truth.
 
@@ -243,18 +264,27 @@ For this source tree, use the development environment:
 
 ```bash
 uv sync --dev
-uv run harness --version
+uv run adp-harness --version
 ```
 
 Self-contained installations update only on explicit request:
 
 ```bash
-harness self update
-harness self uninstall          # preserves local records and repository config
-harness self uninstall --purge-data
+adp-harness self update
+adp-harness self rollback           # returns to the one verified previous Runtime
+adp-harness self uninstall          # preserves local records and repository config
+adp-harness self uninstall --purge-data
 ```
 
-Package-manager installations must be updated and removed with the package manager that installed them.
+Running the installer again does not perform a normal upgrade; it points a
+healthy installation to `adp-harness self update`. If the v2 installation
+manifest proves that a damaged launcher or Runtime belongs to Adaptive Harness,
+the same installer shows a repair plan and asks before replacing it. If
+ownership cannot be established, it stops for manual inspection.
+
+Package-manager installations must be updated and removed with the package
+manager that installed them; `self update`, `self rollback`, and standalone
+repair do not manage those installations.
 
 ## Initialize without a client projection
 
@@ -267,13 +297,13 @@ Node project can declare a test script in `package.json`.
 Initialization is review-first. The first command prints a complete diff and writes nothing:
 
 ```bash
-harness init --adapter generic
-harness init --adapter generic --apply
-harness doctor --verbose
+adp-harness init --adapter generic
+adp-harness init --adapter generic --apply
+adp-harness doctor --verbose
 ```
 
 The Generic adapter creates no client instruction file and is explicitly
-`observe`. To add an official projection later, use `harness integration
+`observe`. To add an official projection later, use `adp-harness integration
 install` as shown above. Commit the three canonical files and any client
 projection you selected before starting the first task:
 
@@ -288,7 +318,7 @@ projection you selected before starting the first task:
 Give the task an explicit ID, scope, capability, and optional module traits:
 
 ```bash
-harness task start \
+adp-harness task start \
   --id first-task \
   --goal "Fix the failing example" \
   --scope src \
@@ -296,11 +326,11 @@ harness task start \
   --capability project-tests \
   --trait code-change
 
-harness capability run \
+adp-harness capability run \
   --task first-task \
   --capability project-tests
 
-harness task verify first-task
+adp-harness task verify first-task
 ```
 
 `completed` is produced only when required acceptance evidence, workspace identity, scope, and security invariants all pass. `task accept-risk` can waive only explicitly waivable verification gaps.
@@ -308,10 +338,10 @@ harness task verify first-task
 Capabilities with `approval_policy: "ask"` or high-risk side effects require a separately reviewed, task/SHA/worktree/path/count/expiry-bound approval:
 
 ```bash
-harness capability approve \
+adp-harness capability approve \
   --task first-task \
   --capability project-tests
-harness capability approve \
+adp-harness capability approve \
   --task first-task \
   --capability project-tests \
   --apply
@@ -326,11 +356,11 @@ Runtime records are isolated by repository identity under the user data director
 An advanced, per-clone mode keeps records in the Git common directory, normally `.git/adaptive-harness/`. It does not write runtime data beside the committed `.harness/*.json` files and is not offered during first-time initialization:
 
 ```bash
-harness storage mode
-harness storage migrate repository-local
-harness storage migrate repository-local --apply
-harness storage migrate user-data --rollback
-harness storage migrate user-data --rollback --apply --yes
+adp-harness storage mode
+adp-harness storage migrate repository-local
+adp-harness storage migrate repository-local --apply
+adp-harness storage migrate user-data --rollback
+adp-harness storage migrate user-data --rollback --apply --yes
 ```
 
 Migration is review-first. It is rejected while a task is active or when the target already contains records; apply copies and verifies data, atomically changes the local mode, and retains the source as a rollback copy. An immediate `--rollback` may switch to that retained copy only while it still exactly matches the active records. A later reverse migration follows the normal process after the retained target has been explicitly archived or pruned; existing records are never merged automatically.
@@ -340,9 +370,9 @@ Migration is review-first. It is rejected while a task is active or when the tar
 Modules are installed but unloaded by default. Enablement is review-first; task JSON and human output report `installed`, `enabled`, `suggested`, `activated`, or `blocked`. Context appears only for `activated` modules.
 
 ```bash
-harness module enable tdd-guidance --policy auto
-harness module enable tdd-guidance --policy auto --apply
-harness task start \
+adp-harness module enable tdd-guidance --policy auto
+adp-harness module enable tdd-guidance --policy auto --apply
+adp-harness task start \
   --id tdd-task \
   --goal "Add validation" \
   --scope src \
@@ -353,19 +383,19 @@ harness task start \
 Trials require explicit measured results before promotion:
 
 ```bash
-harness module trial tdd-guidance --tasks 3 --apply
-harness module trial-result tdd-guidance beneficial \
+adp-harness module trial tdd-guidance --tasks 3 --apply
+adp-harness module trial-result tdd-guidance beneficial \
   --task task-1 \
   --evidence-ref record:task-1 \
   --apply
-harness module promote tdd-guidance --apply
+adp-harness module promote tdd-guidance --apply
 ```
 
 Templates are inert and only write after an explicit render, diff review, and confirmation:
 
 ```bash
-harness template render handoff --output docs/handoff.md
-harness template render handoff --output docs/handoff.md --apply
+adp-harness template render handoff --output docs/handoff.md
+adp-harness template render handoff --output docs/handoff.md --apply
 ```
 
 ## Development and verification
@@ -393,6 +423,6 @@ All commands provide stable exit codes and JSON output through their local `--js
 Human summaries and top-level help support English and Simplified Chinese. The locale option precedes the command; JSON fields and protocol values remain stable English:
 
 ```bash
-harness --locale zh-CN doctor
-harness --locale zh-CN doctor --json
+adp-harness --locale zh-CN doctor
+adp-harness --locale zh-CN doctor --json
 ```

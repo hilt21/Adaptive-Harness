@@ -26,6 +26,6 @@
     "fingerprint": "9aae75f29a5268cbff2ac13e6a9cc61d0c45f2f4323b6dc011029d7b9a7c4e7b",
     "strategy": "deterministic-local"
   },
-  "runtime_version": "0.1.1",
+  "runtime_version": "0.2.0",
   "schema_version": "1.0"
 }

@@ -43,7 +43,7 @@ valid_existing_run() {
         [ -f "$RUN_REPOSITORY/.harness/modules.lock.json" ] &&
         [ "$(git -C "$RUN_REPOSITORY" rev-parse --show-toplevel 2>/dev/null)" = "$repository_physical" ] &&
         git -C "$RUN_REPOSITORY" rev-parse --verify HEAD >/dev/null 2>&1 &&
-        harness doctor --root "$RUN_REPOSITORY" >/dev/null 2>&1
+        adp-harness doctor --root "$RUN_REPOSITORY" >/dev/null 2>&1
 }
 
 cleanup() {
@@ -89,7 +89,7 @@ esac
 
 command -v git >/dev/null 2>&1 || fail "Git is required"
 command -v uv >/dev/null 2>&1 || fail "uv is required"
-command -v harness >/dev/null 2>&1 || fail "harness is required"
+command -v adp-harness >/dev/null 2>&1 || fail "adp-harness is required"
 PYTHON_BIN=$(command -v python3.12 || command -v python3 || true)
 [ -n "$PYTHON_BIN" ] || fail "Python 3.12 or newer is required"
 "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' ||
@@ -157,7 +157,7 @@ STAGING_ROOT=
 NEW_RUN_CREATED=1
 
 uv sync --no-config --locked --python "$PYTHON_BIN" --project "$RUN_REPOSITORY"
-harness doctor --root "$RUN_REPOSITORY" >/dev/null
+adp-harness doctor --root "$RUN_REPOSITORY" >/dev/null
 
 if [ -n "$(git -C "$RUN_REPOSITORY" status --porcelain)" ]; then
     fail "prepared repository is not clean"

@@ -12,10 +12,13 @@ _START = re.compile(
     re.MULTILINE,
 )
 _END = re.compile(r"^<!-- adaptive-harness:end -->$", re.MULTILINE)
-_AGENT_BODY = """Use Adaptive Harness for repository-changing tasks.
-Start or resume the task through `harness task`, request capability
-escalation through Harness, and run Harness verification before completion.
-Treat Harness task status and executor evidence as authoritative."""
+_AGENT_BODY = (
+    "Use Adaptive Harness for repository-changing tasks.\n"
+    'Start or resume the task through `"$HOME/.local/bin/adp-harness" task`, '
+    "request capability\n"
+    "escalation through Harness, and run Harness verification before completion.\n"
+    "Treat Harness task status and executor evidence as authoritative."
+)
 
 
 class ProjectionConflictError(ValueError):

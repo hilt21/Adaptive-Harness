@@ -34,6 +34,6 @@ sh .devcontainer/post-create.sh
 UV_TOOL_BIN=$(uv tool dir --bin)
 PATH="$PATH:$UV_TOOL_BIN"
 export PATH
-harness --version
+adp-harness --version
 test -d .demo/python-quickstart/repo/.git
 test -d .demo/python-quickstart/state

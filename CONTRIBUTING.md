@@ -29,7 +29,7 @@ Adaptive Harness uses Python 3.12+ and
 git clone https://github.com/hilt21/Adaptive-Harness.git
 cd Adaptive-Harness
 uv sync --dev
-uv run harness --version
+uv run adp-harness --version
 ```
 
 The supported runtime environments are macOS and glibc Linux. WSL2 support is

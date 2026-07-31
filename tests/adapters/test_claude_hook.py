@@ -31,7 +31,7 @@ def test_pre_tool_hook_blocks_bypass_and_allows_controlled_launcher() -> None:
             "Bash",
             {
                 "command": (
-                    "harness capability run --task task-1 "
+                    '"$HOME/.local/bin/adp-harness" capability run --task task-1 '
                     "--capability project-tests"
                 )
             },

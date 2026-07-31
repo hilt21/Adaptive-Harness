@@ -2,7 +2,7 @@
 
 - 状态：Draft — 已完成需求访谈，可用于新仓库立项与开发
 - 目标仓库：`adaptive-harness`
-- CLI：`harness`
+- CLI：`adp-harness`
 - Python 包：`adaptive-harness`
 - 许可证：Apache-2.0
 
@@ -64,7 +64,7 @@ Adaptive Harness 将二者分离：最小内核只负责治理和事实；规划
 
 ### 6.1 新仓库初始化
 
-用户先通过一条官方安装命令把自包含 Adaptive Harness CLI 安装为当前用户全局可用的 `harness` 命令，再在新项目执行 `harness init`。安装 Runtime 不扫描或修改当前仓库。系统扫描项目与客户端，匹配模型能力档案，生成最小内核配置、Agent 指令接入块、可选模块建议和未启用模板清单。用户查看配置、成本、权限和全部文件 diff 后确认写入。
+用户先通过一条官方安装命令把自包含 Adaptive Harness CLI 安装为当前用户全局可用的 `adp-harness` 命令，再在新项目执行 `adp-harness init`。安装 Runtime 不扫描或修改当前仓库。系统扫描项目与客户端，匹配模型能力档案，生成最小内核配置、Agent 指令接入块、可选模块建议和未启用模板清单。用户查看配置、成本、权限和全部文件 diff 后确认写入。
 
 ### 6.2 已有仓库迁移
 
@@ -76,7 +76,7 @@ Agent 收到开发请求后，adapter 自动创建 draft Task Envelope。Runtime
 
 ### 6.4 反馈与 Harness 调整
 
-任务结束后，minimal 模式只记录结构化事件和三档人工反馈，不调用模型。用户执行 `harness suggest` 时才分析历史 episode，形成 Observation、Candidate 或 Recommendation。用户接受后先进入 Trial，验证收益后才能 promote。
+任务结束后，minimal 模式只记录结构化事件和三档人工反馈，不调用模型。用户执行 `adp-harness suggest` 时才分析历史 episode，形成 Observation、Candidate 或 Recommendation。用户接受后先进入 Trial，验证收益后才能 promote。
 
 ## 7. 产品范围
 
@@ -249,16 +249,18 @@ Fast/Standard/Controlled 不作为安全内核，只能是可选解释标签。G
 
 ### 12.1 产品安装
 
-正式发行的首选渠道是 GitHub Releases 中版本化、带 checksum 与签名证明的自包含 CLI。官方安装脚本根据 OS、CPU 和 libc 选择构件，默认安装到当前用户的 `~/.local/bin/harness`，不要求预装 Python、`pipx`、`uv` 或管理员权限：
+正式发行的首选渠道是 GitHub Releases 中版本化、带 checksum 与签名证明的自包含 CLI。官方安装脚本根据 OS、CPU 和 libc 选择构件，默认安装到当前用户的 `~/.local/bin/adp-harness`，不要求预装 Python、`pipx`、`uv` 或管理员权限：
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh | sh
 ```
 
-安装脚本必须保持短小、可审查，并提供下载后检查再执行的两步替代方式。它只能下载版本化构件，必须在原子替换前验证 SHA-256；正式 Release 同时发布可验证的构建来源证明。校验失败必须终止，不得回退到其他来源。用户可显式固定版本。默认安装范围是当前用户；system-wide 安装是显式高级选项。
+安装脚本必须可审查，并提供下载后检查再执行的两步替代方式。它只能下载版本化构件，必须在原子替换前验证 SHA-256；正式 Release 同时发布可验证的构建来源证明。校验失败必须终止，不得回退到其他来源。用户可显式固定版本。MVP 只提供当前用户级安装，不提供 system-wide 或 `sudo` 安装。
 
-若 `~/.local/bin` 不在 `PATH`，交互安装先展示目标 shell 配置与受管区块并经确认后写入；非交互安装不修改 shell 配置，只输出精确指引。重复安装和 PATH 修改必须幂等。安装完成后执行 `harness --version` 自检，但不得扫描当前目录、执行 `harness init` 或写入仓库。
+若 `~/.local/bin` 未在默认 shell 的干净新会话中生效，交互安装必须为 zsh、bash 或 fish 选择实际加载的配置文件，展示受管区块 diff，并经一次确认后原子写入；用户拒绝时安装整体终止且不保留半成品。未知 shell 不猜测 `~/.profile`。非交互安装只有在持久 PATH 已生效或显式设置高级开关 `HARNESS_CONFIRM_PATH=1` 时才能继续。安装完成前必须以最小环境启动干净默认 shell，分别在 HOME 与普通仓库验证 `command -v adp-harness` 精确指向 `~/.local/bin/adp-harness` 且 `--version` 成功；任一失败回滚 launcher、Runtime、manifest 与 shell 配置。当前终端无需被临时修改，用户打开新终端即可。
+
+安装器必须拒绝 PATH 中更高优先级的同名命令、目标位置的未知文件及无法证明归属的安装，不得覆盖或静默 shadow。已验证的正常安装只提示用户运行 `adp-harness self update`，安装器不承担常规升级。manifest 能证明属于 Adaptive Harness 但 launcher 或 Runtime 损坏时，安装器展示 repair 计划并再次确认；manifest 缺失或损坏到无法证明归属时停止并要求人工检查。PATH 修改与 repair 必须幂等、原子且失败可恢复。
 
 PyPI wheel 继续作为高级用户、下游打包者和开发者渠道：
 
@@ -268,7 +270,7 @@ pipx install adaptive-harness
 uv tool install adaptive-harness
 ```
 
-源码开发可使用 editable install。安装后，`harness --help`、`harness init` 和 `harness doctor` 必须可直接执行。Runtime、可信执行器、官方 adapter、内置模块与模板属于已安装包，不复制到每个用户仓库。
+源码开发可使用 editable install。安装后，`adp-harness --help`、`adp-harness init` 和 `adp-harness doctor` 必须可直接执行。Runtime、可信执行器、官方 adapter、内置模块与模板属于已安装包，不复制到每个用户仓库。
 
 Linux 安装器探测 Bubblewrap 和 user namespace，但不得自动使用 `sudo` 或系统包管理器安装依赖。缺失时必须说明基础 CLI 与 `observe` 可用、`enforced` 不可用，并提供用户确认后执行的发行版安装指引。只有客户端拦截与 OS sandbox 都通过当前主机验证时才能标记 `enforced`。
 
@@ -324,14 +326,14 @@ deterministic scan
 - 客户端实现 `enforced` 所必需的原生 hook、权限或 Gateway 配置；
 - adapter 必需且可从 canonical 配置重建的薄 shim。
 
-受管投影必须带稳定的开始/结束标记、生成器版本和内容 hash。初始化应保留已有文件与用户规则，只添加或更新 Harness 所有的区块；重复运行必须幂等，卸载集成只能删除受管内容。`harness config diff|apply` 负责预览和重建投影，`harness doctor` 负责检测缺失、漂移或冲突。
+受管投影必须带稳定的开始/结束标记、生成器版本和内容 hash。初始化应保留已有文件与用户规则，只添加或更新 Harness 所有的区块；重复运行必须幂等，卸载集成只能删除受管内容。`adp-harness config diff|apply` 负责预览和重建投影，`adp-harness doctor` 负责检测缺失、漂移或冲突。
 
 Agent 指令文件中的接入块保持简短，例如：
 
 ```md
 <!-- adaptive-harness:start version="1" -->
 Use Adaptive Harness for repository-changing tasks.
-Start or resume the task through `harness task`, request capability
+Start or resume the task through `"$HOME/.local/bin/adp-harness" task`, request capability
 escalation through Harness, and run Harness verification before completion.
 Treat Harness task status and executor evidence as authoritative.
 <!-- adaptive-harness:end -->
@@ -378,7 +380,9 @@ MVP 支持 Generic CLI、Codex 与 Claude Code，至少一个真实实现 `enfor
 
 - prompt-only 客户端：生成受管 `AGENTS.md` 或 `CLAUDE.md` 区块，模式为 `observe`；
 - 支持 hook、权限回调或 Gateway 的客户端：同时生成客户端原生配置，经端到端验证后才可标记 `enforced`；
-- Generic CLI：不假设存在 Agent 指令文件，由用户通过 `harness task` 或受控启动入口显式进入 Harness。
+- Generic CLI：不假设存在 Agent 指令文件，由用户通过 `adp-harness task` 或受控启动入口显式进入 Harness。
+
+终端交互可以依赖 `adp-harness` 的持久 PATH；受管客户端 hook 与接入投影必须使用 `"$HOME/.local/bin/adp-harness"`，不得依赖 GUI 应用是否继承 shell PATH，也不得提交某台机器的个人绝对路径。doctor 分别报告终端命令解析与客户端固定 launcher 的健康状态。
 
 项目级接入投影应提交到版本控制，使其他贡献者获得同一入口；仅含缓存、临时 shim、日志或机器路径的输出必须进入本地数据目录，不得提交。所有投影均可由 canonical 配置和固定版本 Runtime 重建。
 
@@ -426,7 +430,7 @@ MVP 仅允许官方内置模块和用户指定的本地模块。禁止模型自�
 
 典型模板包括完整计划、Request Analysis、Review、TDD 清单、handoff、persona、详细失败分析和完整 rollback 文档。
 
-模板不会在 `init` 或模块激活时自动写入。只有用户显式执行 `harness template render <id> --output <path>` 后才创建文件；生成前显示 diff。渲染结果随即成为用户拥有的普通项目内容，可选择提交，Harness 不自动覆盖，除非用户再次确认渲染。
+模板不会在 `init` 或模块激活时自动写入。只有用户显式执行 `adp-harness template render <id> --output <path>` 后才创建文件；生成前显示 diff。渲染结果随即成为用户拥有的普通项目内容，可选择提交，Harness 不自动覆盖，除非用户再次确认渲染。
 
 ## 16. 反馈系统
 
@@ -514,25 +518,25 @@ proposed → approved → trial → promoted
 ## 17. CLI 需求
 
 ```text
-harness init
-harness doctor
-harness integration list|install|uninstall|repair
+adp-harness init
+adp-harness doctor
+adp-harness integration list|install|uninstall|repair
 
-harness task start|show|amend|cancel|verify|accept-risk
-harness module list|enable|disable|trial|promote|rollback
-harness template list|render
-harness feedback show|mode
-harness suggest
-harness config explain|diff|apply
-harness storage status|prune|pin|mode|migrate
-harness export
-harness upgrade check|plan|apply|rollback
-harness self update|uninstall
+adp-harness task start|show|amend|cancel|verify|accept-risk
+adp-harness module list|enable|disable|trial|promote|rollback
+adp-harness template list|render
+adp-harness feedback show|mode
+adp-harness suggest
+adp-harness config explain|diff|apply
+adp-harness storage status|prune|pin|mode|migrate
+adp-harness export
+adp-harness upgrade check|plan|apply|rollback
+adp-harness self update|rollback|uninstall
 ```
 
 所有命令必须支持人类摘要和稳定 JSON 输出、稳定 exit code、artifact 引用和 `--verbose`。修改命令先显示 canonical 配置与受管投影的完整 diff，再以可恢复事务应用。不能提供直接编辑 canonical record 的入口。
 
-`harness self update|uninstall` 只管理官方自包含 Runtime。Runtime 不后台检查或自动升级；显式更新必须验证正式构件并原子替换，失败时恢复上一版本。`harness upgrade` 只管理当前仓库配置与受管投影。pipx、uv 或 PyPI 安装必须交由原包管理器更新和卸载。Runtime 卸载默认保留本地数据与所有仓库配置；彻底删除数据需要显式 `--purge-data` 和二次确认。
+`adp-harness self update|rollback|uninstall` 只管理官方自包含 Runtime。Runtime 不后台检查或自动升级；`self update` 这一显式命令本身即授权更新，不再要求第二个 `--apply` 或确认提示，默认安装最新 stable，也可通过 `--version` 固定。更新必须先验证 installation manifest、launcher、当前 Runtime 与正式构件 checksum，原子切换后再次通过稳定 launcher 自检，失败时自动恢复。`self rollback` 离线切回唯一一个已验证的上一 Runtime，成功后消费恢复点以避免来回翻转。`adp-harness upgrade` 只管理当前仓库配置与受管投影。pipx、uv 或 PyPI 安装必须交由原包管理器更新和卸载。Runtime 卸载默认保留本地数据与所有仓库配置；彻底删除数据需要显式 `--purge-data` 和二次确认。
 
 ## 18. 数据与存储
 
@@ -569,7 +573,7 @@ harness self update|uninstall
 - 默认零遥测、零上传。
 - `feedback.mode` 只控制本地功能。
 - 崩溃报告需用户确认。
-- `harness export` 先展示字段和文件。
+- `adp-harness export` 先展示字段和文件。
 - 导出默认移除 secret、绝对路径、remote、用户名和环境变量。
 - 云端团队能力必须是未来独立 opt-in 功能。
 
@@ -610,8 +614,9 @@ MVP 不声称对抗已经控制同一系统用户的恶意攻击者，不替代 
 ## 24. 版本、升级与回滚
 
 - Runtime 使用语义化版本。
-- 自包含 Runtime 只在用户执行 `harness self update` 时联网；不后台检查或自动更新。
-- Runtime 更新保留上一构件并原子替换；项目配置迁移仍由 `harness upgrade` 独立计划和应用。
+- 自包含 Runtime 只在用户执行 `adp-harness self update` 时联网；不后台检查或自动更新。
+- standalone installation manifest 使用 schema `2.0`，记录稳定 `product_id`、channel/version/path 关系、launcher SHA-256、Runtime SHA-256、release archive SHA-256，以及 PATH profile、受管区块 hash 和 profile 是否由安装器创建。ownership 或 hash 不匹配时 fail closed，并给出一条可复制的 repair 命令，不向普通用户暴露原始 hash 细节。
+- Runtime 更新保留一个已验证的上一构件并原子替换；`self rollback` 在锁内验证 current/previous、切换并通过稳定 launcher 自检，失败恢复 current，成功消费恢复点。项目配置迁移仍由 `adp-harness upgrade` 独立计划和应用。
 - config、capabilities、record 分别声明 schema version。
 - modules.lock 固定来源、版本与 hash。
 - 不兼容升级必须阻止启动，不得忽略未知字段。
@@ -663,7 +668,7 @@ docs/
 
 ### F-001 初始化与 Doctor
 
-验收：受支持的干净主机能以一条命令安装经过校验的当前用户级自包含构件，无需 Python、额外 Python 包管理器或 `sudo`，并在新 shell 与任意仓库提供 `harness` 命令；安装不修改仓库。Node 和 Python fixture 能生成三个 canonical 配置文件及所选客户端的最小接入投影；用户确认前不写入；重复初始化幂等；多文件提交失败或中断后全量恢复；doctor 检测 schema、客户端、module hash、受管投影漂移、workspace 与 enforced sandbox 前置条件。
+验收：受支持的干净主机能以一条命令安装经过校验的当前用户级自包含构件，无需 Python、额外 Python 包管理器或 `sudo`，并在新 shell 与任意仓库提供 `adp-harness` 命令；安装不修改仓库。Node 和 Python fixture 能生成三个 canonical 配置文件及所选客户端的最小接入投影；用户确认前不写入；重复初始化幂等；多文件提交失败或中断后全量恢复；doctor 检测 schema、客户端、module hash、受管投影漂移、workspace 与 enforced sandbox 前置条件。
 
 ### F-002 Task Envelope 与状态存储
 

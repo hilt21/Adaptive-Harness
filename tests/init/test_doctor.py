@@ -5,6 +5,8 @@ import subprocess
 from contextlib import suppress
 from pathlib import Path
 
+import pytest
+
 from adaptive_harness.init import Doctor, Initializer
 
 FIXTURES = Path(__file__).parents[2] / "fixtures"
@@ -50,16 +52,55 @@ def test_doctor_accepts_valid_initialized_project(tmp_path: Path) -> None:
     report = Doctor(root).run()
 
     assert report.ok is True
-    assert all(check.status == "pass" for check in report.checks)
+    assert all(check.status != "error" for check in report.checks)
     assert {check.name for check in report.checks} >= {
         "transaction",
         "config",
         "capabilities",
         "modules-lock",
         "adapter",
+        "client-launcher",
         "managed-projections",
+        "terminal-command",
         "workspace",
     }
+
+
+def test_doctor_reports_terminal_and_client_launchers_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = initialized_project(tmp_path)
+    home = tmp_path / "home"
+    launcher = home / ".local/bin/adp-harness"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\nprintf '0.2.0\\n'\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", str(launcher.parent))
+
+    report = Doctor(root).run()
+
+    assert report.check("terminal-command").status == "pass"
+    assert report.check("client-launcher").status == "pass"
+
+
+def test_doctor_requires_working_fixed_launcher_for_enforced_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = copy_fixture(tmp_path)
+    initializer = Initializer(root)
+    initializer.apply(initializer.plan(adapter="claude-code"))
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    report = Doctor(root).run()
+
+    assert report.ok is False
+    assert report.check("client-launcher").status == "error"
+    assert "unavailable" in report.check("client-launcher").message
 
 
 def test_doctor_detects_schema_error(tmp_path: Path) -> None:

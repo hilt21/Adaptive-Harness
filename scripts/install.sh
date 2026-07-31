@@ -33,9 +33,18 @@ install_lock=
 install_lock_acquired=0
 candidate_lock=
 launcher_installed=
+repair_mode=0
+recognized_version=
+shell_kind=
+profile_created_by_installer=false
+path_block_sha256=
+runtime_sha256=
+launcher_sha256=
+release_archive_sha256=
+install_working_directory=$PWD
 
 fail() {
-  printf 'harness installer: %s\n' "$1" >&2
+  printf 'adp-harness installer: %s\n' "$1" >&2
   exit 1
 }
 
@@ -121,6 +130,20 @@ validate_semver() {
   '
 }
 
+validate_repository() {
+  printf '%s\n' "$1" | awk '
+    /^[^[:space:]\/]+\/[^[:space:]\/]+$/ { valid = 1 }
+    END { exit(valid ? 0 : 1) }
+  '
+}
+
+validate_sha256() {
+  printf '%s\n' "$1" | awk '
+    length($0) == 64 && $0 !~ /[^0-9a-f]/ { valid = 1 }
+    END { exit(valid ? 0 : 1) }
+  '
+}
+
 acquire_install_lock() {
   install_lock=${data_root}.install.lock
   candidate_lock=$(mktemp "${install_lock}.candidate.XXXXXX") || \
@@ -134,35 +157,22 @@ acquire_install_lock() {
   fi
   rm -f "$candidate_lock"
   candidate_lock=
-  if [ -L "$install_lock" ] || [ ! -f "$install_lock" ]; then
-    fail "another standalone installation operation is in progress"
-  fi
-  lock_owner=$(cat "$install_lock")
-  case "$lock_owner" in
-    ''|*[!0-9]*) fail "another standalone installation operation is in progress" ;;
-  esac
-  if kill -0 "$lock_owner" 2>/dev/null; then
-    fail "another standalone installation operation is in progress"
-  fi
-  stale_lock=${install_lock}.stale.$$
-  mv "$install_lock" "$stale_lock" 2>/dev/null || \
-    fail "another standalone installation operation is in progress"
-  if [ -L "$stale_lock" ] || [ ! -f "$stale_lock" ]; then
-    mv "$stale_lock" "$install_lock" 2>/dev/null || true
-    fail "stale installation lock is not a regular file"
-  fi
-  rm -f "$stale_lock"
-  acquire_install_lock
+  fail "another standalone installation operation is in progress (lock: ${install_lock}). If no installation operation is running, remove that exact lock file and retry."
 }
 
 select_profile() {
+  case "${SHELL:-}" in
+    */zsh) shell_kind=zsh ;;
+    */bash) shell_kind=bash ;;
+    */fish) shell_kind=fish ;;
+    *) fail "unsupported default shell; supported shells are zsh, bash, and fish" ;;
+  esac
   profile="${HARNESS_SHELL_PROFILE:-}"
   if [ -z "$profile" ]; then
-    case "${SHELL:-}" in
-      */zsh) profile="${HOME}/.zshrc" ;;
-      */bash) profile="${HOME}/.bashrc" ;;
-      */fish) profile="${HOME}/.config/fish/conf.d/adaptive-harness.fish" ;;
-      *) profile="${HOME}/.profile" ;;
+    case "$shell_kind" in
+      zsh) profile="${HOME}/.zshrc" ;;
+      bash) profile="${HOME}/.bashrc" ;;
+      fish) profile="${HOME}/.config/fish/conf.d/adaptive-harness.fish" ;;
     esac
   fi
   if [ -L "$profile" ]; then
@@ -179,7 +189,7 @@ select_profile() {
 }
 
 configure_profile_format() {
-  if [ "${profile##*.}" = "fish" ]; then
+  if [ "$shell_kind" = "fish" ]; then
     escaped=$(printf '%s' "$install_dir" | sed "s/'/'\\\\''/g")
     path_line="fish_add_path '$escaped'"
   else
@@ -190,11 +200,19 @@ configure_profile_format() {
   end_marker="# <<< adaptive-harness PATH <<<"
 }
 
+record_managed_path() {
+  managed_profile=$profile
+  canonical_path_block=${temporary_dir}/path-block.canonical
+  printf '%s\n%s\n%s\n' "$start_marker" "$path_line" "$end_marker" \
+    > "$canonical_path_block"
+  path_block_sha256=$(sha256_file "$canonical_path_block")
+}
+
 detect_managed_profile() {
   select_profile
   inspect_managed_profile
   if [ "$has_start" = "1" ] && [ "$has_end" = "1" ]; then
-    managed_profile=$profile
+    record_managed_path
   elif [ "$has_start" != "$has_end" ]; then
     fail "managed PATH block is malformed in $profile"
   fi
@@ -271,8 +289,14 @@ validate_install_paths() {
 
 detect_recorded_managed_profile() {
   [ -L "$manifest" ] || return 0
-  recorded_profile=$(sed -n 's/^  "path_profile": "\(.*\)"$/\1/p' "$manifest")
+  recorded_profile=$(manifest_string path_profile)
   [ -n "$recorded_profile" ] || return 0
+  recorded_created=$(sed -n \
+    's/^  "profile_created_by_installer": \([a-z]*\)$/\1/p' "$manifest")
+  case "$recorded_created" in
+    true|false) profile_created_by_installer=$recorded_created ;;
+    *) fail "recorded shell profile ownership is invalid" ;;
+  esac
   validate_safe_absolute_path "managed shell profile" "$recorded_profile"
   profile=$recorded_profile
   if [ -L "$profile" ] || [ ! -f "$profile" ]; then
@@ -284,7 +308,7 @@ detect_recorded_managed_profile() {
     fail "managed PATH block is malformed in $profile"
   fi
   if [ "$profile_state" = "managed" ]; then
-    managed_profile=$profile
+    record_managed_path
   fi
 }
 
@@ -292,7 +316,7 @@ configure_path() {
   select_profile
   inspect_managed_profile
   if [ "$has_start" = "1" ] && [ "$has_end" = "1" ]; then
-    managed_profile=$profile
+    record_managed_path
     printf 'PATH is already managed in %s\n' "$profile"
     return
   fi
@@ -349,8 +373,7 @@ configure_path() {
     esac
   fi
   if [ "$confirmed" != "1" ]; then
-    printf 'Shell profile was not changed. Run: %s\n' "$path_line"
-    return
+    fail "PATH update was not confirmed; no installation was kept"
   fi
 
   if [ "$profile_existed_at_review" = "1" ]; then
@@ -373,6 +396,7 @@ configure_path() {
   else
     cp "$proposed_profile" "$staged_profile"
     chmod 600 "$staged_profile"
+    profile_created_by_installer=true
   fi
   if [ "$profile_existed_at_review" = "1" ]; then
     if [ ! -f "$profile" ] || [ -L "$profile" ] || \
@@ -385,8 +409,8 @@ configure_path() {
   profile_changed=1
   mv -f "$staged_profile" "$profile"
   staged_profile=
-  managed_profile=$profile
-  printf 'Updated PATH in %s; open a new shell before running harness.\n' "$profile"
+  record_managed_path
+  printf 'Updated PATH in %s; open a new shell before running adp-harness.\n' "$profile"
 }
 
 json_escape() {
@@ -416,18 +440,31 @@ write_install_manifest() {
     profile_json="\"$(json_escape "$managed_profile")\""
   else
     profile_json=null
+    path_block_json=null
+    profile_created_by_installer=false
+  fi
+  if [ -n "$path_block_sha256" ]; then
+    path_block_json="\"${path_block_sha256}\""
+  else
+    path_block_json=null
   fi
   cat > "$manifest_target" <<EOF
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
+  "product_id": "dev.adaptive-harness.cli",
   "channel": "standalone",
   "version": "$(json_escape "$version")",
-  "binary_path": "$(json_escape "${install_dir}/harness")",
+  "binary_path": "$(json_escape "${install_dir}/adp-harness")",
   "data_root": "$(json_escape "$data_root")",
   "runtime_path": "$(json_escape "$runtime_path")",
   "release_base": "$(json_escape "$release_base")",
   "release_repository": "$(json_escape "$repository")",
-  "path_profile": ${profile_json}
+  "path_profile": ${profile_json},
+  "launcher_sha256": "${launcher_sha256}",
+  "runtime_sha256": "${runtime_sha256}",
+  "release_archive_sha256": "${release_archive_sha256}",
+  "path_block_sha256": ${path_block_json},
+  "profile_created_by_installer": ${profile_created_by_installer}
 }
 EOF
   chmod 600 "$manifest_target"
@@ -463,6 +500,168 @@ pointer_target() {
   printf '%s\n' "$link_target"
 }
 
+run_clean_shell() {
+  clean_command=$1
+  env -i \
+    HOME="$HOME" \
+    USER="${USER:-}" \
+    LOGNAME="${LOGNAME:-}" \
+    SHELL="$SHELL" \
+    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    HARNESS_INSTALL_DIR="$install_dir" \
+    HARNESS_EXPECTED_COMMAND="${install_dir}/adp-harness" \
+    HARNESS_EXPECTED_VERSION="$version" \
+    HARNESS_VERIFY_DIR="${2:-$HOME}" \
+    TERM="${TERM:-dumb}" \
+    "$SHELL" -ic "$clean_command"
+}
+
+clean_shell_has_install_dir() {
+  case "$shell_kind" in
+    fish)
+      run_clean_shell \
+        'contains -- "$HARNESS_INSTALL_DIR" $PATH' "$HOME" \
+        >/dev/null 2>&1
+      ;;
+    *)
+      run_clean_shell \
+        'case ":$PATH:" in *":$HARNESS_INSTALL_DIR:"*) exit 0 ;; *) exit 1 ;; esac' \
+        "$HOME" >/dev/null 2>&1
+      ;;
+  esac
+}
+
+verify_clean_shell_directory() {
+  verify_directory=$1
+  case "$shell_kind" in
+    fish)
+      verify_command='
+        cd "$HARNESS_VERIFY_DIR"; or exit 1
+        set resolved (command -v adp-harness); or exit 1
+        test "$resolved" = "$HARNESS_EXPECTED_COMMAND"; or exit 1
+        test (adp-harness --version) = "$HARNESS_EXPECTED_VERSION"
+      '
+      ;;
+    *)
+      verify_command='
+        cd "$HARNESS_VERIFY_DIR" || exit 1
+        resolved=$(command -v adp-harness) || exit 1
+        [ "$resolved" = "$HARNESS_EXPECTED_COMMAND" ] || exit 1
+        [ "$(adp-harness --version)" = "$HARNESS_EXPECTED_VERSION" ]
+      '
+      ;;
+  esac
+  run_clean_shell "$verify_command" "$verify_directory" >/dev/null 2>&1 || \
+    fail "new-shell verification failed in $verify_directory"
+}
+
+manifest_string() {
+  key=$1
+  sed -n "s/^  \"${key}\": \"\\(.*\\)\"[,]*$/\\1/p" "$manifest"
+}
+
+manifest_has_v2_shape() {
+  awk '
+    BEGIN {
+      count = split("schema_version product_id channel version binary_path data_root runtime_path release_base release_repository path_profile launcher_sha256 runtime_sha256 release_archive_sha256 path_block_sha256 profile_created_by_installer", keys, " ")
+    }
+    NR == 1 {
+      if ($0 != "{") invalid = 1
+      next
+    }
+    NR >= 2 && NR <= count + 1 {
+      prefix = "  \"" keys[NR - 1] "\":"
+      if (substr($0, 1, length(prefix)) != prefix) invalid = 1
+      if (NR <= count && substr($0, length($0), 1) != ",") invalid = 1
+      if (NR <= count && substr($0, length($0) - 1, 1) == ",") invalid = 1
+      if (NR == count + 1 && substr($0, length($0), 1) == ",") invalid = 1
+      next
+    }
+    NR == count + 2 {
+      if ($0 != "}") invalid = 1
+      next
+    }
+    { invalid = 1 }
+    END { exit(invalid || NR != count + 2 ? 1 : 0) }
+  ' "$manifest"
+}
+
+recognize_installation() {
+  [ -L "$manifest" ] || return 1
+  [ "$(readlink "$manifest")" = "runtime/current/installation.json" ] || return 1
+  [ -f "$manifest" ] || return 1
+  manifest_has_v2_shape || return 1
+  [ "$(manifest_string schema_version)" = "2.0" ] || return 1
+  [ "$(manifest_string product_id)" = "dev.adaptive-harness.cli" ] || return 1
+  [ "$(manifest_string channel)" = "standalone" ] || return 1
+  recognized_version=$(manifest_string version)
+  validate_semver "$recognized_version" || return 1
+  [ "$(manifest_string binary_path)" = "${install_dir}/adp-harness" ] || return 1
+  [ "$(manifest_string data_root)" = "$data_root" ] || return 1
+  [ "$(manifest_string runtime_path)" = "$runtime_path" ] || return 1
+  [ -n "$(manifest_string release_base)" ] || return 1
+  validate_repository "$(manifest_string release_repository)" || return 1
+  validate_sha256 "$(manifest_string launcher_sha256)" || return 1
+  validate_sha256 "$(manifest_string runtime_sha256)" || return 1
+  validate_sha256 "$(manifest_string release_archive_sha256)" || return 1
+  recorded_profile=$(manifest_string path_profile)
+  recorded_created=$(sed -n \
+    's/^  "profile_created_by_installer": \([a-z]*\)$/\1/p' "$manifest")
+  if [ -n "$recorded_profile" ]; then
+    validate_sha256 "$(manifest_string path_block_sha256)" || return 1
+    case "$recorded_created" in true|false) ;; *) return 1 ;; esac
+  else
+    grep -Fqx '  "path_profile": null,' "$manifest" || return 1
+    grep -Fqx '  "path_block_sha256": null,' "$manifest" || return 1
+    [ "$recorded_created" = "false" ] || return 1
+  fi
+}
+
+installation_is_healthy() {
+  launcher="${install_dir}/adp-harness"
+  [ -f "$launcher" ] && [ ! -L "$launcher" ] || return 1
+  recorded_launcher_sha256=$(manifest_string launcher_sha256)
+  [ -n "$recorded_launcher_sha256" ] || return 1
+  [ "$(sha256_file "$launcher")" = "$recorded_launcher_sha256" ] || return 1
+  [ -L "$runtime_path" ] || return 1
+  current_target=$(readlink "$runtime_path")
+  case "$current_target" in
+    slots/*)
+      current_name=${current_target#slots/}
+      case "$current_name" in ""|.|..|*/*) return 1 ;; esac
+      ;;
+    *) return 1 ;;
+  esac
+  current_slot=${runtime_parent}/${current_target}
+  runtime_binary=${current_slot}/adp-harness
+  [ -f "$runtime_binary" ] && [ ! -L "$runtime_binary" ] || return 1
+  recorded_runtime_sha256=$(manifest_string runtime_sha256)
+  recorded_version=$(manifest_string version)
+  [ -n "$recorded_runtime_sha256" ] && [ -n "$recorded_version" ] || return 1
+  [ "$(sha256_file "$runtime_binary")" = "$recorded_runtime_sha256" ] || return 1
+  [ "$("$runtime_binary" --version 2>/dev/null)" = "$recorded_version" ] || return 1
+}
+
+confirm_repair() {
+  printf '%s\n' \
+    'Recognized a damaged Adaptive Harness installation.' \
+    "Repair version: ${recognized_version}" \
+    "Repair launcher: ${install_dir}/adp-harness" \
+    "Repair Runtime: ${runtime_path}" \
+    'Project configuration and local task records will be preserved.'
+  confirmed=0
+  if [ "${HARNESS_CONFIRM_REPAIR:-0}" = "1" ]; then
+    confirmed=1
+  elif [ "${HARNESS_NONINTERACTIVE:-0}" != "1" ] && [ -r /dev/tty ]; then
+    printf 'Apply this repair? [y/N] ' >/dev/tty
+    answer=
+    IFS= read -r answer </dev/tty || true
+    case "$answer" in y|Y|yes|YES) confirmed=1 ;; esac
+  fi
+  [ "$confirmed" = "1" ] || fail "repair was not confirmed; no installation was changed"
+  repair_mode=1
+}
+
 report_linux_sandbox() {
   case "$target" in
     linux-*) ;;
@@ -473,14 +672,14 @@ report_linux_sandbox() {
     printf '%s\n' \
       'Bubblewrap is not installed; base CLI and observe remains available.' \
       'Linux enforced execution requires Bubblewrap and working user namespaces.' \
-      'Install it with the system package manager (Debian/Ubuntu: sudo apt install bubblewrap), then run harness doctor.'
+      'Install it with the system package manager (Debian/Ubuntu: sudo apt install bubblewrap), then run adp-harness doctor.'
     return
   fi
   if ! "$bwrap_command" --unshare-user --ro-bind / / -- /bin/true \
     >/dev/null 2>&1; then
     printf '%s\n' \
       'Bubblewrap is installed but its user-namespace probe failed.' \
-      'Base CLI and observe remains available; run harness doctor for details.'
+      'Base CLI and observe remains available; run adp-harness doctor for details.'
   fi
 }
 
@@ -489,6 +688,8 @@ require_command tar
 require_command awk
 require_command diff
 require_command cmp
+require_command git
+require_command grep
 require_command ln
 require_command mktemp
 
@@ -498,28 +699,21 @@ case "$target" in
   *) fail "unsupported release target: $target" ;;
 esac
 
-if [ -z "$version" ]; then
-  version=$(resolve_version)
+if [ -n "$version" ]; then
+  case "$version" in
+    v*) version=${version#v} ;;
+  esac
+  if ! validate_semver "$version"; then
+    fail "version must be a semantic version"
+  fi
 fi
-case "$version" in
-  v*) version=${version#v} ;;
-esac
-if ! validate_semver "$version"; then
-  fail "version must be a semantic version"
-fi
-if ! printf '%s\n' "$repository" | awk '
-  /^[^[:space:]\/]+\/[^[:space:]\/]+$/ { valid = 1 }
-  END { exit(valid ? 0 : 1) }
-'; then
+if ! validate_repository "$repository"; then
   fail "release repository must be owner/project"
 fi
 
 resolve_state_paths
 validate_install_paths
 
-tag="v${version}"
-archive_name="adaptive-harness-${tag}-${target}.tar.gz"
-release_url="${release_base}/${tag}"
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/adaptive-harness-install.XXXXXX")
 cleanup() {
   exit_status=$?
@@ -563,21 +757,21 @@ cleanup() {
       fi
     fi
     if [ "$launcher_changed" = "1" ]; then
-      if [ -f "${install_dir}/harness" ] && [ ! -L "${install_dir}/harness" ] && \
-        cmp -s "$launcher_installed" "${install_dir}/harness"; then
+      if [ -f "${install_dir}/adp-harness" ] && [ ! -L "${install_dir}/adp-harness" ] && \
+        cmp -s "$launcher_installed" "${install_dir}/adp-harness"; then
         if [ "$launcher_existed" = "1" ]; then
           launcher_restore=$(mktemp "${install_dir}/.harness-restore.XXXXXX")
           cp -p "$launcher_backup" "$launcher_restore"
-          mv -f "$launcher_restore" "${install_dir}/harness" || \
+          mv -f "$launcher_restore" "${install_dir}/adp-harness" || \
             recovery_incomplete=1
         else
-          rm -f "${install_dir}/harness" || recovery_incomplete=1
+          rm -f "${install_dir}/adp-harness" || recovery_incomplete=1
         fi
       elif [ "$launcher_existed" = "1" ] && \
-        cmp -s "$launcher_backup" "${install_dir}/harness"; then
+        cmp -s "$launcher_backup" "${install_dir}/adp-harness"; then
         :
       elif [ "$launcher_existed" = "0" ] && \
-        [ ! -e "${install_dir}/harness" ] && [ ! -L "${install_dir}/harness" ]; then
+        [ ! -e "${install_dir}/adp-harness" ] && [ ! -L "${install_dir}/adp-harness" ]; then
         :
       else
         recovery_incomplete=1
@@ -612,7 +806,7 @@ cleanup() {
       fi
     fi
     if [ "$recovery_incomplete" = "1" ]; then
-      printf 'harness installer: recovery was incomplete; retained active recovery artifacts\n' >&2
+      printf 'adp-harness installer: recovery was incomplete; retained active recovery artifacts\n' >&2
     fi
   fi
   rm -rf "$temporary_dir"
@@ -637,17 +831,17 @@ cleanup() {
     if [ "$runtime_slots_existed" = "0" ] && [ -n "$runtime_slots" ] && \
       [ -d "$runtime_slots" ]; then
       rmdir "$runtime_slots" 2>/dev/null || \
-        printf 'harness installer: could not remove new runtime slots directory\n' >&2
+        printf 'adp-harness installer: could not remove new runtime slots directory\n' >&2
     fi
     if [ "$runtime_parent_existed" = "0" ] && [ -n "$runtime_parent" ] && \
       [ -d "$runtime_parent" ]; then
       rmdir "$runtime_parent" 2>/dev/null || \
-        printf 'harness installer: could not remove new runtime directory\n' >&2
+        printf 'adp-harness installer: could not remove new runtime directory\n' >&2
     fi
     if [ "$data_root_existed" = "0" ] && [ -n "$data_root" ] && \
       [ -d "$data_root" ]; then
       rmdir "$data_root" 2>/dev/null || \
-        printf 'harness installer: could not remove new data directory\n' >&2
+        printf 'adp-harness installer: could not remove new data directory\n' >&2
     fi
   fi
   return "$exit_status"
@@ -659,6 +853,44 @@ trap 'exit 1' HUP INT TERM
 mkdir -p "$data_root"
 acquire_install_lock
 
+runtime_parent=${data_root}/runtime
+runtime_slots=${runtime_parent}/slots
+select_profile
+resolved_command=$(command -v adp-harness 2>/dev/null || true)
+if [ -n "$resolved_command" ] && \
+  [ "$resolved_command" != "${install_dir}/adp-harness" ]; then
+  fail "adp-harness already resolves to an unrelated command: $resolved_command"
+fi
+if [ -e "${install_dir}/adp-harness" ] || [ -L "${install_dir}/adp-harness" ] || \
+  [ -e "$manifest" ] || [ -L "$manifest" ]; then
+  recognize_installation || \
+    fail "existing adp-harness installation cannot be identified; inspect it manually"
+  detect_recorded_managed_profile
+  if installation_is_healthy && clean_shell_has_install_dir; then
+    printf '%s\n' \
+      "Adaptive Harness $(manifest_string version) is already installed." \
+      "Update it with: adp-harness self update"
+    install_committed=1
+    exit 0
+  fi
+  confirm_repair
+  version=$recognized_version
+fi
+
+if [ -z "$version" ]; then
+  version=$(resolve_version)
+fi
+case "$version" in
+  v*) version=${version#v} ;;
+esac
+if ! validate_semver "$version"; then
+  fail "version must be a semantic version"
+fi
+
+tag="v${version}"
+archive_name="adaptive-harness-${tag}-${target}.tar.gz"
+release_url="${release_base}/${tag}"
+
 curl -fsSL "${release_url}/${archive_name}" -o "${temporary_dir}/${archive_name}"
 curl -fsSL "${release_url}/SHA256SUMS" -o "${temporary_dir}/SHA256SUMS"
 expected=$(awk -v name="$archive_name" '$2 == name { print $1 }' \
@@ -666,23 +898,23 @@ expected=$(awk -v name="$archive_name" '$2 == name { print $1 }' \
 [ -n "$expected" ] || fail "release checksum is missing for ${archive_name}"
 actual=$(sha256_file "${temporary_dir}/${archive_name}")
 [ "$actual" = "$expected" ] || fail "release checksum verification failed"
+release_archive_sha256=$actual
 
 tar -xzf "${temporary_dir}/${archive_name}" -C "$temporary_dir" runtime
-[ -f "${temporary_dir}/runtime/harness" ] || fail "release archive has no harness runtime"
-[ ! -L "${temporary_dir}/runtime/harness" ] || fail "release runtime executable is unsafe"
-chmod 755 "${temporary_dir}/runtime/harness"
+[ -f "${temporary_dir}/runtime/adp-harness" ] || fail "release archive has no adp-harness runtime"
+[ ! -L "${temporary_dir}/runtime/adp-harness" ] || fail "release runtime executable is unsafe"
+chmod 755 "${temporary_dir}/runtime/adp-harness"
 
-runtime_parent=${data_root}/runtime
 previous_runtime=${runtime_parent}/previous
-runtime_slots=${runtime_parent}/slots
 [ -d "$runtime_parent" ] && runtime_parent_existed=1
 [ -d "$runtime_slots" ] && runtime_slots_existed=1
 mkdir -p "$runtime_slots"
 staged_runtime=$(mktemp -d "${runtime_slots}/.${version}.XXXXXX")
 cp -R "${temporary_dir}/runtime/." "$staged_runtime"
-runtime_version=$("${staged_runtime}/harness" --version) || \
+runtime_version=$("${staged_runtime}/adp-harness" --version) || \
   fail "release runtime failed its version check"
 [ "$runtime_version" = "$version" ] || fail "release runtime version does not match"
+runtime_sha256=$(sha256_file "${staged_runtime}/adp-harness")
 
 manifest_link_target=runtime/current/installation.json
 if [ -L "$manifest" ]; then
@@ -703,15 +935,15 @@ elif [ -e "$runtime_path" ]; then
 fi
 
 mkdir -p "$install_dir"
-if [ -e "${install_dir}/harness" ] || [ -L "${install_dir}/harness" ]; then
-  [ -f "${install_dir}/harness" ] && [ ! -L "${install_dir}/harness" ] || \
+if [ -e "${install_dir}/adp-harness" ] || [ -L "${install_dir}/adp-harness" ]; then
+  [ -f "${install_dir}/adp-harness" ] && [ ! -L "${install_dir}/adp-harness" ] || \
     fail "installed launcher path is unsafe"
   launcher_existed=1
   launcher_backup=${temporary_dir}/launcher.backup
-  cp -p "${install_dir}/harness" "$launcher_backup"
+  cp -p "${install_dir}/adp-harness" "$launcher_backup"
 fi
-staged=$(mktemp "${install_dir}/.harness.XXXXXX")
-escaped_runtime=$(printf '%s' "${runtime_path}/harness" | \
+staged=$(mktemp "${install_dir}/.adp-harness.XXXXXX")
+escaped_runtime=$(printf '%s' "${runtime_path}/adp-harness" | \
   sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\$/\\$/g' -e 's/`/\\`/g')
 cat > "$staged" <<EOF
 #!/bin/sh
@@ -720,20 +952,17 @@ EOF
 chmod 755 "$staged"
 launcher_installed=${temporary_dir}/launcher.installed
 cp -p "$staged" "$launcher_installed"
+launcher_sha256=$(sha256_file "$launcher_installed")
 launcher_changed=1
-mv -f "$staged" "${install_dir}/harness"
+mv -f "$staged" "${install_dir}/adp-harness"
 
-case ":${PATH}:" in
-  *":${install_dir}:"*)
-    detect_recorded_managed_profile
-    [ -n "$managed_profile" ] || detect_managed_profile
-    ;;
-  *)
-    printf '%s is not on PATH. Add it before running harness in a new shell.\n' \
-      "$install_dir"
-    configure_path
-    ;;
-esac
+if clean_shell_has_install_dir; then
+  detect_recorded_managed_profile
+  [ -n "$managed_profile" ] || detect_managed_profile
+else
+  printf '%s is not available in a clean new shell.\n' "$install_dir"
+  configure_path
+fi
 
 write_install_manifest "${staged_runtime}/installation.json"
 mkdir -p "$data_root"
@@ -757,16 +986,24 @@ current_changed=1
 replace_pointer "$runtime_path" "$new_runtime_target"
 staged_runtime=
 
-installed_version=$("${install_dir}/harness" --version) || installed_version=
+installed_version=$("${install_dir}/adp-harness" --version) || installed_version=
 if [ "$installed_version" != "$version" ]; then
   fail "installed runtime failed its version check"
 fi
+verification_working_directory=$install_working_directory
+if [ "$verification_working_directory" = "$HOME" ]; then
+  verification_working_directory=${temporary_dir}/ordinary-repository
+  git init -q "$verification_working_directory" || \
+    fail "could not create the repository verification workspace"
+fi
+verify_clean_shell_directory "$HOME"
+verify_clean_shell_directory "$verification_working_directory"
 install_committed=1
 if [ -n "$old_previous_target" ] && \
   [ "$old_previous_target" != "$old_current_target" ]; then
   if ! rm -rf "${runtime_parent}/${old_previous_target}"; then
-    printf 'harness installer: retained stale previous runtime for manual cleanup\n' >&2
+    printf 'adp-harness installer: retained stale previous runtime for manual cleanup\n' >&2
   fi
 fi
-printf 'Installed Adaptive Harness %s at %s/harness\n' "$version" "$install_dir"
+printf 'Installed Adaptive Harness %s at %s/adp-harness\n' "$version" "$install_dir"
 report_linux_sandbox

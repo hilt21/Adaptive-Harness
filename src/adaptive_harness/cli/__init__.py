@@ -134,7 +134,8 @@ class _LocalizedArgumentParser(argparse.ArgumentParser):
 
 def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
     parser = _LocalizedArgumentParser(
-        prog="harness", description=translate("Adaptive Harness command-line interface")
+        prog="adp-harness",
+        description=translate("Adaptive Harness command-line interface"),
     )
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument(
@@ -355,6 +356,11 @@ def _parser(*, default_locale: str = "en-US") -> argparse.ArgumentParser:
     self_update.add_argument("--version")
     self_update.add_argument("--json", action="store_true")
     self_update.add_argument("--verbose", action="store_true")
+    self_rollback = self_commands.add_parser(
+        "rollback", help=translate("restore the previous standalone Runtime")
+    )
+    self_rollback.add_argument("--json", action="store_true")
+    self_rollback.add_argument("--verbose", action="store_true")
     self_uninstall = self_commands.add_parser(
         "uninstall", help=translate("remove a standalone Runtime installation")
     )
@@ -1173,6 +1179,24 @@ def _run_self(
             previous=update_result.previous_version,
             version=update_result.version,
         )
+    elif arguments.self_command == "rollback":
+        rollback_result = manager.rollback()
+        document = {
+            "status": "rolled_back",
+            "previous_version": rollback_result.previous_version,
+            "version": rollback_result.version,
+            "binary_path": str(rollback_result.binary_path),
+            "backup_path": str(rollback_result.backup_path),
+            "cleanup_pending": [
+                str(path) for path in rollback_result.cleanup_pending
+            ],
+        }
+        human_message = translate(
+            "Rolled back Adaptive Harness from {previous} to {version}."
+        ).format(
+            previous=rollback_result.previous_version,
+            version=rollback_result.version,
+        )
     else:
         uninstall_plan = manager.plan_uninstall(purge_data=arguments.purge_data)
         review_document = {
@@ -1246,7 +1270,7 @@ def _run_self(
             print(
                 translate("Launcher: {path}").format(path=document["binary_path"])
             )
-            if arguments.self_command == "update":
+            if arguments.self_command in {"update", "rollback"}:
                 print(
                     translate("Previous Runtime: {path}").format(
                         path=document["backup_path"]

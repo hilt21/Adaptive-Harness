@@ -14,6 +14,7 @@ def test_projection_preserves_user_content_and_is_idempotent() -> None:
 
     assert rendered.startswith(existing)
     assert "adaptive-harness:start" in rendered
+    assert '"$HOME/.local/bin/adp-harness" task' in rendered
     assert projection.render(rendered) == rendered
     assert projection.inspect(rendered).valid is True
 
@@ -54,4 +55,3 @@ def test_projection_remove_deletes_only_managed_block() -> None:
 def test_projection_rejects_unbalanced_markers(content: str) -> None:
     with pytest.raises(ProjectionConflictError):
         ManagedProjection.agent_instructions().render(content)
-

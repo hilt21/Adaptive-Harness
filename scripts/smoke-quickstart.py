@@ -86,7 +86,7 @@ def main() -> int:
         f"{source_root / '.venv' / 'bin'}{os.pathsep}"
         f"{environment.get('PATH', '')}"
     )
-    for command in ("git", "harness", "uv"):
+    for command in ("git", "adp-harness", "uv"):
         if shutil.which(command, path=environment["PATH"]) is None:
             raise RuntimeError(f"{command} is required for the quickstart smoke test")
 
@@ -116,7 +116,7 @@ def main() -> int:
 
         init_plan = run_json(
             [
-                "harness",
+                "adp-harness",
                 "init",
                 "--root",
                 str(repository),
@@ -139,7 +139,7 @@ def main() -> int:
         ]
         started = run_json(
             [
-                "harness",
+                "adp-harness",
                 "task",
                 "start",
                 "--id",
@@ -166,7 +166,7 @@ def main() -> int:
 
         failed = run_json(
             [
-                "harness",
+                "adp-harness",
                 "capability",
                 "run",
                 "--task",
@@ -201,7 +201,7 @@ def main() -> int:
 
         succeeded = run_json(
             [
-                "harness",
+                "adp-harness",
                 "capability",
                 "run",
                 "--task",
@@ -223,7 +223,7 @@ def main() -> int:
 
         verified = run_json(
             [
-                "harness",
+                "adp-harness",
                 "task",
                 "verify",
                 "demo-fix",
@@ -237,7 +237,7 @@ def main() -> int:
 
         completed = run_json(
             [
-                "harness",
+                "adp-harness",
                 "task",
                 "show",
                 "demo-fix",
@@ -262,7 +262,7 @@ def main() -> int:
         module_common = ["--root", str(repository), "--json"]
         planned = run_json(
             [
-                "harness",
+                "adp-harness",
                 "module",
                 "enable",
                 "tdd-guidance",
@@ -279,7 +279,7 @@ def main() -> int:
 
         applied = run_json(
             [
-                "harness",
+                "adp-harness",
                 "module",
                 "enable",
                 "tdd-guidance",
@@ -295,7 +295,7 @@ def main() -> int:
 
         modules = run_json(
             [
-                "harness",
+                "adp-harness",
                 "module",
                 "list",
                 *module_common,
@@ -334,7 +334,7 @@ def main() -> int:
 
         activated_task = run_json(
             [
-                "harness",
+                "adp-harness",
                 "task",
                 "start",
                 "--id",
@@ -361,7 +361,7 @@ def main() -> int:
 
         cancelled = run_json(
             [
-                "harness",
+                "adp-harness",
                 "task",
                 "cancel",
                 "demo-module",

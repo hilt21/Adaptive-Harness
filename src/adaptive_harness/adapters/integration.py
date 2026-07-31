@@ -81,7 +81,9 @@ class IntegrationManager:
             raise ValueError(f"unsupported adapter: {adapter_id}")
         config_path = self.root / ".harness/config.json"
         if not config_path.is_file():
-            raise InitializationError("run `harness init` before managing integrations")
+            raise InitializationError(
+                "run `adp-harness init` before managing integrations"
+            )
         config = _load_config(config_path)
         candidates: dict[str, bytes] = {}
         projection = ManagedProjection.agent_instructions()

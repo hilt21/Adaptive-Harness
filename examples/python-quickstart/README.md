@@ -42,7 +42,7 @@ The five-minute timer starts here.
 ## 1. Start a governed task
 
 ```bash
-harness task start \
+adp-harness task start \
   --id "$TASK_ID" \
   --goal "Fix subtraction without changing the test" \
   --scope src \
@@ -64,7 +64,7 @@ SHA, and current worktree.
 ## 2. Capture the failure
 
 ```bash
-harness capability run \
+adp-harness capability run \
   --task "$TASK_ID" \
   --capability project-tests
 ```
@@ -103,7 +103,7 @@ Do not commit yet. The task remains bound to its original base SHA.
 ## 4. Capture successful evidence
 
 ```bash
-harness capability run \
+adp-harness capability run \
   --task "$TASK_ID" \
   --capability project-tests
 ```
@@ -120,7 +120,7 @@ earlier failure remains in task history.
 ## 5. Pass the completion gate
 
 ```bash
-harness task verify "$TASK_ID"
+adp-harness task verify "$TASK_ID"
 ```
 
 Expected result:
@@ -137,14 +137,14 @@ worktree, and a diff limited to `src` or `tests`.
 First review the proposed canonical configuration change:
 
 ```bash
-harness module enable tdd-guidance --policy auto
+adp-harness module enable tdd-guidance --policy auto
 ```
 
 Then apply exactly that reviewed change:
 
 ```bash
-harness module enable tdd-guidance --policy auto --apply --yes
-harness module list
+adp-harness module enable tdd-guidance --policy auto --apply --yes
+adp-harness module list
 ```
 
 Expected module state:
@@ -168,7 +168,7 @@ export MODULE_TASK_ID="module-$(date +%s)"
 Start another code-change task:
 
 ```bash
-harness task start \
+adp-harness task start \
   --id "$MODULE_TASK_ID" \
   --goal "Demonstrate progressive module activation" \
   --scope src \
@@ -187,7 +187,7 @@ Write a failing test, implement the smallest fix, then verify it.
 End the demonstration without leaving a non-terminal task:
 
 ```bash
-harness task cancel \
+adp-harness task cancel \
   "$MODULE_TASK_ID" \
   --reason "Activation demonstrated"
 ```

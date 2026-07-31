@@ -66,17 +66,17 @@ jobs:
       - name: Build self-contained runtime
         run: >-
           uv run --group release python -m PyInstaller
-          --clean --onedir --name harness
+          --clean --onedir --name adp-harness
           --collect-data adaptive_harness
           src/adaptive_harness/__main__.py
       - name: Smoke test runtime
         run: |
-          test "$(dist/harness/harness --version)" = "$VERSION"
-          dist/harness/harness --help >/dev/null
+          test "$(dist/adp-harness/adp-harness --version)" = "$VERSION"
+          dist/adp-harness/adp-harness --help >/dev/null
       - name: Package release artifact
         run: >-
           uv run python scripts/package_release.py
-          --bundle dist/harness
+          --bundle dist/adp-harness
           --version "$VERSION"
           --target "${{ matrix.target }}"
           --output release
@@ -98,19 +98,23 @@ jobs:
           HARNESS_VERSION="$VERSION" \
           HARNESS_TARGET="${{ matrix.target }}" \
           HARNESS_NONINTERACTIVE=1 \
+          HARNESS_CONFIRM_PATH=1 \
+          SHELL=/bin/bash \
             sh scripts/install.sh
-          test "$("$install_dir/harness" --version)" = "$VERSION"
-          HARNESS_TEST_MANIFEST="$state_dir/installation.json" \
-            uv run python -c 'import json, os; from pathlib import Path; p = Path(os.environ["HARNESS_TEST_MANIFEST"]); value = json.loads(p.read_text()); value["version"] = "0.0.0"; p.write_text(json.dumps(value) + "\n")'
-          HARNESS_INSTALL_MANIFEST="$state_dir/installation.json" \
-          HARNESS_TARGET="${{ matrix.target }}" \
-            "$install_dir/harness" self update --version "$VERSION" --json
+          test "$("$install_dir/adp-harness" --version)" = "$VERSION"
+          if HARNESS_INSTALL_MANIFEST="$state_dir/installation.json" \
+            "$install_dir/adp-harness" self update --version "$VERSION" --json \
+            >"$RUNNER_TEMP/same-version.json"; then
+            echo "same-version self update unexpectedly succeeded" >&2
+            exit 1
+          fi
+          grep -q "already installed" "$RUNNER_TEMP/same-version.json"
           mkdir -p "$state_dir/projects/release-gate"
           printf 'preserve\n' > "$state_dir/projects/release-gate/record.txt"
           HARNESS_INSTALL_MANIFEST="$state_dir/installation.json" \
-            "$install_dir/harness" self uninstall --yes --json
+            "$install_dir/adp-harness" self uninstall --yes --json
           test -f "$state_dir/projects/release-gate/record.txt"
-          test ! -e "$install_dir/harness"
+          test ! -e "$install_dir/adp-harness"
           test ! -e "$state_dir/runtime"
       - uses: actions/upload-artifact@v4
         with:

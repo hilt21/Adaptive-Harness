@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -78,6 +81,7 @@ class Doctor:
         self._check_document("capabilities", "capabilities", checks)
         modules = self._check_document("modules-lock", "modules-lock", checks)
         self._check_runtime_version(config, checks)
+        self._check_launchers(config, checks)
         self._check_adapter(config, checks)
         self._check_projections(config, checks)
         self._check_module_hashes(modules, checks)
@@ -151,6 +155,87 @@ class Doctor:
                 "runtime-version",
                 "pass" if status.compatible else "error",
                 status.message,
+            )
+        )
+
+    def _check_launchers(
+        self,
+        config: dict[str, Any] | None,
+        checks: list[Diagnostic],
+    ) -> None:
+        resolved = shutil.which("adp-harness")
+        checks.append(
+            Diagnostic(
+                "terminal-command",
+                "pass" if resolved is not None else "warning",
+                (
+                    f"terminal resolves adp-harness to {resolved}"
+                    if resolved is not None
+                    else "terminal PATH does not resolve adp-harness"
+                ),
+            )
+        )
+        if config is None:
+            checks.append(
+                Diagnostic(
+                    "client-launcher",
+                    "error",
+                    "valid config is unavailable",
+                )
+            )
+            return
+        adapter = cast(dict[str, Any], config["adapter"])
+        if adapter["id"] == "generic":
+            checks.append(
+                Diagnostic(
+                    "client-launcher",
+                    "pass",
+                    "generic terminal integration has no managed client launcher",
+                )
+            )
+            return
+        launcher = Path.home() / ".local/bin/adp-harness"
+        available = (
+            not launcher.is_symlink()
+            and launcher.is_file()
+            and os.access(launcher, os.X_OK)
+        )
+        expected_version = cast(str, config["runtime_version"])
+        working = False
+        if available:
+            try:
+                completed = subprocess.run(
+                    (str(launcher), "--version"),
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            else:
+                working = (
+                    completed.returncode == 0
+                    and completed.stdout.strip() == expected_version
+                )
+        required = adapter["mode"] == "enforced"
+        status = "pass" if working else ("error" if required else "warning")
+        checks.append(
+            Diagnostic(
+                "client-launcher",
+                status,
+                (
+                    f"managed client launcher is working at {launcher}"
+                    if working
+                    else (
+                        f"managed client launcher is unavailable at {launcher}"
+                        if not available
+                        else (
+                            "managed client launcher failed its version check "
+                            f"at {launcher}"
+                        )
+                    )
+                ),
             )
         )
 

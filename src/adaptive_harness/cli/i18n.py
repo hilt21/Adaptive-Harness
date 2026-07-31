@@ -92,6 +92,9 @@ _ZH_CN = {
     "Updated Adaptive Harness from {previous} to {version}.": (
         "已将 Adaptive Harness 从 {previous} 更新到 {version}。"
     ),
+    "Rolled back Adaptive Harness from {previous} to {version}.": (
+        "已将 Adaptive Harness 从 {previous} 回滚到 {version}。"
+    ),
     "Uninstalled Adaptive Harness and purged local records.": (
         "已卸载 Adaptive Harness 并彻底删除本地记录。"
     ),

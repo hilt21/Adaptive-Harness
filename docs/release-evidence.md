@@ -1,14 +1,14 @@
 # MVP release evidence
 
-Evidence date: 2026-07-26. This document records commands that were actually run against the current worktree. Temporary project paths and user-specific machine paths are intentionally omitted.
+Evidence date: 2026-07-31. This document records commands that were actually run against the current worktree. Temporary project paths and user-specific machine paths are intentionally omitted.
 
 ## Readiness and build
 
 - Python 3.12.1 and 3.13.7 were both available and used.
-- `uv build` produced `adaptive_harness-0.1.0-py3-none-any.whl` and `adaptive_harness-0.1.0.tar.gz`.
+- `uv build` produced `adaptive_harness-0.2.0-py3-none-any.whl` and `adaptive_harness-0.2.0.tar.gz`.
 - PyInstaller 6.21.0 produced a self-contained macOS arm64 `onedir` runtime. The release packager created its deterministic archive and checksum, and `scripts/install.sh` installed it into a clean temporary home without Python-package-manager involvement or repository writes.
 - The wheel was installed into a new virtual environment without an editable source link.
-- Installed-package smoke checks passed for `harness --version`, English/Chinese help, module Trial planning, packaged schemas, and the built-in executable runner.
+- Installed-package smoke checks passed for `adp-harness --version`, English/Chinese help, module Trial planning, packaged schemas, and the built-in executable runner.
 - Wheel-external Python and Node fixtures both produced the three canonical files. Python `generic` and Node `codex` Doctor reports were fully passing; the Codex fixture also produced the managed `AGENTS.md` projection.
 
 ## Automated quality gates
@@ -18,8 +18,8 @@ The current Python 3.12 worktree passed:
 ```text
 ruff check .                         passed
 mypy src tests                      passed (81 source files)
-pytest -q                           257 passed, 4 skipped
-coverage                            84.99% (minimum 80%)
+pytest -q                           283 passed, 4 skipped
+coverage                            85.01% (minimum 80%)
 ```
 
 The four default skips are the host OS sandbox tests. They were run separately with `HARNESS_RUN_OS_SANDBOX_E2E=1`:
@@ -42,7 +42,7 @@ Claude Code 2.1.162 was run against a separate initialized project with `Read,Ed
   "hookSpecificOutput": {
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
-    "permissionDecisionReason": "mutating tools must execute through `harness capability run`"
+    "permissionDecisionReason": "mutating tools must execute through `adp-harness capability run`"
   }
 }
 ```
@@ -51,7 +51,7 @@ The Edit tool reported a permission denial and the marker file remained byte-for
 
 ## Three real progressive-loading tasks
 
-Three tasks were run through the wheel-installed CLI in a separate Git Python fixture. Each used an offline, read-only declared capability, generated trusted Executor evidence, and reached `completed` through `harness task verify`.
+Three tasks were run through the wheel-installed CLI in a separate Git Python fixture. Each used an offline, read-only declared capability, generated trusted Executor evidence, and reached `completed` through `adp-harness task verify`.
 
 | Task | Project module policy | Activation evidence | Context | Outcome |
 |---|---|---|---|---|
@@ -74,7 +74,7 @@ A separate `real-fix-task` changed `src/python_fixture/__init__.py` inside its d
 - Installed/Enabled/Activated decisions, all four activation policies, total context budget, process/OS isolation, Trial evidence/budget/stop conditions/promote/rollback, and inert template boundaries: module, runner, CLI, and template suites.
 - Feedback off/minimal/research, zero model calls in minimal, taxonomy, maturity, counterexamples, cooldown, and recommendation-to-Trial restriction: feedback suite.
 - Compatibility, transactional upgrade/rollback, retention tiers, pinning, redacted export, and zero telemetry defaults: upgrade and storage/export suites.
-- Standalone archive/checksum generation, one-command install, PATH confirmation/idempotence, explicit self-update, failed-update rollback, preserving uninstall, and purging confirmation: release suites plus the local macOS arm64 packaged-runtime install.
+- Standalone archive/checksum generation, one-command install, clean-shell PATH verification, collision refusal, manifest v2 ownership hashes, explicit repair/self-update/self-rollback, failed-operation recovery, preserving uninstall, managed-profile removal, and purging confirmation: release suites plus the local macOS arm64 packaged-runtime install.
 - Default repository-identity storage, clone-local Git-common-dir selection, review-first copy/verify/switch migration, unfinished-task rejection, target-conflict rejection, and source retention: CLI storage suites.
 
 ## Performance observations
@@ -82,10 +82,10 @@ A separate `real-fix-task` changed `src/python_fixture/__init__.py` inside its d
 Using the isolated wheel environment on the fixture:
 
 ```text
-harness doctor --json               0.29 s
-deterministic harness init plan     0.16 s
+adp-harness doctor --json               0.29 s
+deterministic adp-harness init plan     0.16 s
 ```
 
 Both are below the PRD limits of 2 seconds and 10 seconds respectively. Minimal feedback has a dedicated test proving no analyzer/model call. No benchmark claim is made for remote filesystems or loaded CI hosts.
 
-The local macOS arm64 `onedir` runtime reported `harness --help` in 0.34 seconds after the first launch. The first launch of the unsigned local build took 18.32 seconds while macOS inspected it; this is recorded as local packaging evidence, not a performance claim for signed release artifacts.
+The local macOS arm64 `onedir` runtime reported `adp-harness --help` in 0.34 seconds after the first launch. The first launch of the unsigned local build took 18.32 seconds while macOS inspected it; this is recorded as local packaging evidence, not a performance claim for signed release artifacts.

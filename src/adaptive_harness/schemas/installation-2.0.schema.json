@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://adaptive-harness.dev/schemas/installation-2.0.schema.json",
+  "title": "Adaptive Harness Standalone Installation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "product_id",
+    "channel",
+    "version",
+    "binary_path",
+    "data_root",
+    "runtime_path",
+    "release_base",
+    "release_repository",
+    "path_profile",
+    "launcher_sha256",
+    "runtime_sha256",
+    "release_archive_sha256",
+    "path_block_sha256",
+    "profile_created_by_installer"
+  ],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "product_id": {"const": "dev.adaptive-harness.cli"},
+    "channel": {"const": "standalone"},
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "binary_path": {"type": "string", "pattern": "^/"},
+    "data_root": {"type": "string", "pattern": "^/"},
+    "runtime_path": {"type": "string", "pattern": "^/"},
+    "release_base": {"type": "string", "minLength": 1},
+    "release_repository": {
+      "type": "string",
+      "pattern": "^[^/\\s]+/[^/\\s]+$"
+    },
+    "path_profile": {
+      "oneOf": [
+        {"type": "string", "pattern": "^/"},
+        {"type": "null"}
+      ]
+    },
+    "launcher_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runtime_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "release_archive_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "path_block_sha256": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "profile_created_by_installer": {"type": "boolean"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"path_profile": {"type": "null"}}},
+      "then": {
+        "properties": {
+          "path_block_sha256": {"type": "null"},
+          "profile_created_by_installer": {"const": false}
+        }
+      },
+      "else": {
+        "properties": {
+          "path_block_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
+}

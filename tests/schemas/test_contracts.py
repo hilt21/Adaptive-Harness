@@ -62,15 +62,21 @@ def test_published_schema_is_valid_draft_2020_12(schema_name: str) -> None:
 def test_installation_manifest_matches_its_published_schema(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     document: dict[str, Any] = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
+        "product_id": "dev.adaptive-harness.cli",
         "channel": "standalone",
         "version": "0.1.0",
-        "binary_path": str(tmp_path / "bin/harness"),
+        "binary_path": str(tmp_path / "bin/adp-harness"),
         "data_root": str(data_root),
         "runtime_path": str(data_root / "runtime/current"),
         "release_base": "https://example.invalid/releases/download",
         "release_repository": "owner/project",
         "path_profile": None,
+        "launcher_sha256": "a" * 64,
+        "runtime_sha256": "b" * 64,
+        "release_archive_sha256": "c" * 64,
+        "path_block_sha256": None,
+        "profile_created_by_installer": False,
     }
 
     validator_for("installation").validate(document)
@@ -84,6 +90,12 @@ def test_installation_manifest_matches_its_published_schema(tmp_path: Path) -> N
             validator_for("installation").validate(document)
 
     document["version"] = "0.1.0"
+
+    document["path_profile"] = str(tmp_path / ".bashrc")
+    with pytest.raises(ValidationError):
+        validator_for("installation").validate(document)
+    document["path_block_sha256"] = "d" * 64
+    validator_for("installation").validate(document)
 
     document["unknown"] = True
     with pytest.raises(ValidationError):

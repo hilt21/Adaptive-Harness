@@ -31,11 +31,19 @@ _TARGETS = {
     "macos-arm64",
     "macos-x86_64",
 }
+_CLI_NAME = "adp-harness"
+_PRODUCT_ID = "dev.adaptive-harness.cli"
+_REPAIR_COMMAND = (
+    "curl --proto '=https' --tlsv1.2 -LsSf "
+    "https://github.com/hilt21/Adaptive-Harness/releases/latest/download/install.sh "
+    "| sh"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class InstallManifest:
     schema_version: str
+    product_id: str
     channel: str
     version: str
     binary_path: Path
@@ -44,26 +52,40 @@ class InstallManifest:
     release_base: str
     release_repository: str
     path_profile: Path | None
+    launcher_sha256: str
+    runtime_sha256: str
+    release_archive_sha256: str
+    path_block_sha256: str | None
+    profile_created_by_installer: bool
 
     @classmethod
     def load(cls, path: Path) -> Self:
         expected_manifest_target = Path("runtime/current/installation.json")
+        if not path.exists() and not path.is_symlink():
+            raise ValueError(
+                "standalone installation metadata is unavailable; use the original "
+                "package manager"
+            )
         if (
             not path.is_symlink()
             or path.readlink() != expected_manifest_target
             or not path.is_file()
         ):
-            raise ValueError(
-                "standalone installation metadata is unavailable; use the original "
-                "package manager"
-            )
-        value = json.loads(path.read_text(encoding="utf-8"))
+            raise _unverified_installation()
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise _unverified_installation() from error
+        return cls.from_document(value)
+
+    @classmethod
+    def from_document(cls, value: Any) -> Self:
         if not isinstance(value, dict):
-            raise ValueError("standalone installation metadata is invalid")
+            raise _unverified_installation()
         try:
             validator_for("installation").validate(value)
         except ValidationError as error:
-            raise ValueError("standalone installation metadata is invalid") from error
+            raise _unverified_installation() from error
         binary = Path(cast(str, value["binary_path"]))
         data_root = Path(cast(str, value["data_root"]))
         runtime = Path(cast(str, value["runtime_path"]))
@@ -71,16 +93,17 @@ class InstallManifest:
         profile = Path(profile_value) if isinstance(profile_value, str) else None
         if (
             not binary.is_absolute()
-            or binary.name != "harness"
+            or binary.name != _CLI_NAME
             or not data_root.is_absolute()
             or not runtime.is_absolute()
             or runtime != data_root / "runtime/current"
             or data_root == Path.home()
             or data_root == Path(data_root.anchor)
         ):
-            raise ValueError("standalone installation paths are unsafe")
+            raise _unverified_installation()
         return cls(
-            "1.0",
+            "2.0",
+            _PRODUCT_ID,
             "standalone",
             cast(str, value["version"]),
             binary,
@@ -89,11 +112,17 @@ class InstallManifest:
             cast(str, value["release_base"]),
             cast(str, value["release_repository"]),
             profile,
+            cast(str, value["launcher_sha256"]),
+            cast(str, value["runtime_sha256"]),
+            cast(str, value["release_archive_sha256"]),
+            cast(str | None, value["path_block_sha256"]),
+            cast(bool, value["profile_created_by_installer"]),
         )
 
     def document(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "product_id": self.product_id,
             "channel": self.channel,
             "version": self.version,
             "binary_path": str(self.binary_path),
@@ -102,11 +131,25 @@ class InstallManifest:
             "release_base": self.release_base,
             "release_repository": self.release_repository,
             "path_profile": str(self.path_profile) if self.path_profile else None,
+            "launcher_sha256": self.launcher_sha256,
+            "runtime_sha256": self.runtime_sha256,
+            "release_archive_sha256": self.release_archive_sha256,
+            "path_block_sha256": self.path_block_sha256,
+            "profile_created_by_installer": self.profile_created_by_installer,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class UpdateResult:
+    previous_version: str
+    version: str
+    binary_path: Path
+    backup_path: Path
+    cleanup_pending: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RollbackResult:
     previous_version: str
     version: str
     binary_path: Path
@@ -133,6 +176,7 @@ class UninstallPlan:
     profile_before: bytes | None
     profile_after: bytes | None
     profile_diff: str
+    remove_created_profile: bool
     purge_data: bool
 
 
@@ -142,15 +186,23 @@ class SelfManager:
             os.path.abspath(manifest_path or _default_manifest_path())
         )
 
-    def update(self, requested_version: str | None = None) -> UpdateResult:
+    def _verified_manifest(self) -> InstallManifest:
         manifest = InstallManifest.load(self.manifest_path)
+        if self.manifest_path != manifest.data_root / "installation.json":
+            raise _unverified_installation()
+        _verify_installed_files(manifest)
+        return manifest
+
+    def update(self, requested_version: str | None = None) -> UpdateResult:
+        manifest = self._verified_manifest()
         with _installation_lock(manifest.data_root):
-            if InstallManifest.load(self.manifest_path) != manifest:
+            current = self._verified_manifest()
+            if current != manifest:
                 raise ValueError("standalone installation changed before update")
             return self._update_locked(requested_version)
 
     def _update_locked(self, requested_version: str | None) -> UpdateResult:
-        manifest = InstallManifest.load(self.manifest_path)
+        manifest = self._verified_manifest()
         version = requested_version or self._latest_version(manifest)
         if not is_semver(version):
             raise ValueError("self-update version must be a semantic version")
@@ -165,10 +217,18 @@ class SelfManager:
         actual = hashlib.sha256(archive).hexdigest()
         if actual != expected:
             raise ValueError("release checksum verification failed")
-        return self._replace(manifest, version, archive)
+        return self._replace(manifest, version, archive, actual)
+
+    def rollback(self) -> RollbackResult:
+        manifest = self._verified_manifest()
+        with _installation_lock(manifest.data_root):
+            current = self._verified_manifest()
+            if current != manifest:
+                raise ValueError("standalone installation changed before rollback")
+            return self._rollback_locked(current)
 
     def plan_uninstall(self, *, purge_data: bool = False) -> UninstallPlan:
-        manifest = InstallManifest.load(self.manifest_path)
+        manifest = self._verified_manifest()
         if purge_data and manifest.data_root in {
             Path.home(),
             Path(manifest.data_root.anchor),
@@ -176,7 +236,9 @@ class SelfManager:
             raise ValueError("refusing to purge an unsafe data root")
         runtime_slot = _runtime_slot(manifest.runtime_path)
         runtime_root = manifest.runtime_path.parent
-        launcher_backup = manifest.binary_path.with_name("harness.previous")
+        launcher_backup = manifest.binary_path.with_name(
+            f"{_CLI_NAME}.previous"
+        )
         if manifest.binary_path.is_symlink() or not manifest.binary_path.is_file():
             raise ValueError("installed standalone launcher is missing or unsafe")
         profile_before: bytes | None = None
@@ -186,7 +248,9 @@ class SelfManager:
             if manifest.path_profile.is_relative_to(manifest.data_root):
                 raise ValueError("managed shell profile overlaps the installation data")
             profile_before, profile_after = _managed_path_change(
-                manifest.path_profile, manifest.binary_path.parent
+                manifest.path_profile,
+                manifest.binary_path.parent,
+                manifest.path_block_sha256,
             )
             if profile_before is not None and profile_after is not None:
                 profile_diff = "".join(
@@ -216,6 +280,7 @@ class SelfManager:
             profile_before,
             profile_after,
             profile_diff,
+            manifest.profile_created_by_installer and profile_after == b"",
             purge_data,
         )
 
@@ -224,7 +289,7 @@ class SelfManager:
             return self._uninstall_locked(plan)
 
     def _uninstall_locked(self, plan: UninstallPlan) -> UninstallResult:
-        manifest = InstallManifest.load(self.manifest_path)
+        manifest = self._verified_manifest()
         if manifest != plan.manifest:
             raise ValueError("standalone installation changed after uninstall review")
         if self.manifest_path.parent != manifest.data_root:
@@ -232,7 +297,7 @@ class SelfManager:
                 "standalone installation metadata is outside its data root"
             )
         binary = manifest.binary_path
-        backup = binary.with_name("harness.previous")
+        backup = binary.with_name(f"{_CLI_NAME}.previous")
         for path in (binary, backup):
             if path.is_symlink():
                 raise ValueError(f"refusing to uninstall symlink: {path}")
@@ -264,6 +329,7 @@ class SelfManager:
                     manifest.path_profile,
                     plan.profile_before,
                     plan.profile_after,
+                    remove_file=plan.remove_created_profile,
                 )
         except BaseException:
             restoration_error: BaseException | None = None
@@ -273,6 +339,7 @@ class SelfManager:
                         manifest.path_profile,
                         plan.profile_before,
                         plan.profile_after,
+                        removed_file=plan.remove_created_profile,
                     )
                 except BaseException as caught:
                     restoration_error = caught
@@ -306,7 +373,11 @@ class SelfManager:
         )
 
     def _replace(
-        self, manifest: InstallManifest, version: str, archive: bytes
+        self,
+        manifest: InstallManifest,
+        version: str,
+        archive: bytes,
+        archive_sha256: str,
     ) -> UpdateResult:
         binary = manifest.binary_path
         if binary.is_symlink() or not binary.is_file():
@@ -329,17 +400,21 @@ class SelfManager:
                 _extract_runtime(archive, staged)
             except tarfile.TarError as error:
                 raise ValueError("release archive is invalid") from error
-            completed = subprocess.run(
-                (str(staged / "harness"), "--version"),
-                capture_output=True,
-                text=True,
-                check=False,
+            staged_binary = staged / _CLI_NAME
+            _check_runtime_version(
+                staged_binary,
+                version,
+                failure_message="updated runtime failed its version check",
             )
-            if completed.returncode != 0 or completed.stdout.strip() != version:
-                raise ValueError("updated runtime failed its version check")
+            runtime_sha256 = _sha256_file(staged_binary)
             _atomic_json(
                 staged / "installation.json",
-                replace(manifest, version=version).document(),
+                replace(
+                    manifest,
+                    version=version,
+                    runtime_sha256=runtime_sha256,
+                    release_archive_sha256=archive_sha256,
+                ).document(),
             )
             if backup.exists() or backup.is_symlink():
                 previous_slot = _runtime_slot(backup)
@@ -347,6 +422,8 @@ class SelfManager:
             _atomic_runtime_pointer(backup, current_slot)
             current_switch_started = True
             _atomic_runtime_pointer(runtime, staged)
+            _check_runtime_version(binary, version)
+            self._verified_manifest()
         except BaseException:
             restoration_error: BaseException | None = None
             if current_switch_started:
@@ -391,6 +468,71 @@ class SelfManager:
             cleanup_pending,
         )
 
+    def _rollback_locked(self, manifest: InstallManifest) -> RollbackResult:
+        runtime = manifest.runtime_path
+        runtime_parent = runtime.parent
+        current_slot = _runtime_slot(runtime)
+        backup = runtime_parent / "previous"
+        try:
+            previous_slot = _runtime_slot(backup)
+        except ValueError as error:
+            raise ValueError(
+                "there is no verified previous Runtime to roll back to"
+            ) from error
+        if previous_slot == current_slot:
+            raise ValueError(
+                "previous and current point to the same Runtime; rollback refused"
+            )
+        previous_manifest = _load_slot_manifest(previous_slot)
+        _verify_installed_files(previous_manifest, runtime_slot=previous_slot)
+        if replace(
+            previous_manifest,
+            version=manifest.version,
+            runtime_sha256=manifest.runtime_sha256,
+            release_archive_sha256=manifest.release_archive_sha256,
+        ) != manifest:
+            raise _unverified_installation()
+
+        current_changed = False
+        backup_consumed = False
+        try:
+            _atomic_runtime_pointer(runtime, previous_slot)
+            current_changed = True
+            _check_runtime_version(manifest.binary_path, previous_manifest.version)
+            self._verified_manifest()
+            backup.unlink()
+            backup_consumed = True
+        except BaseException:
+            restoration_error: BaseException | None = None
+            if current_changed:
+                try:
+                    _atomic_runtime_pointer(runtime, current_slot)
+                except BaseException as caught:
+                    restoration_error = caught
+            if backup_consumed:
+                try:
+                    _atomic_runtime_pointer(backup, previous_slot)
+                except BaseException as caught:
+                    restoration_error = restoration_error or caught
+            if restoration_error is not None:
+                raise ValueError(
+                    "standalone rollback failed and runtime recovery was incomplete"
+                ) from restoration_error
+            raise
+
+        cleanup_pending: tuple[Path, ...] = ()
+        try:
+            _remove_runtime_directory(current_slot)
+        except (OSError, ValueError):
+            cleanup_pending = (current_slot,)
+        return RollbackResult(
+            manifest.version,
+            previous_manifest.version,
+            manifest.binary_path,
+            backup,
+            cleanup_pending,
+        )
+
     def _latest_version(self, manifest: InstallManifest) -> str:
         request = urllib.request.Request(
             f"https://github.com/{manifest.release_repository}/releases/latest",
@@ -402,6 +544,79 @@ class SelfManager:
         if not tag.startswith("v"):
             raise ValueError("could not resolve the latest standalone version")
         return tag[1:]
+
+
+def _unverified_installation() -> ValueError:
+    return ValueError(
+        "Adaptive Harness installation cannot be verified. Repair it with: "
+        f"{_REPAIR_COMMAND}"
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _check_runtime_version(
+    binary: Path,
+    expected_version: str,
+    *,
+    failure_message: str | None = None,
+) -> None:
+    try:
+        completed = subprocess.run(
+            (str(binary), "--version"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        if failure_message is not None:
+            raise ValueError(failure_message) from error
+        raise _unverified_installation() from error
+    if (
+        completed.returncode != 0
+        or completed.stdout.strip() != expected_version
+    ):
+        if failure_message is not None:
+            raise ValueError(failure_message)
+        raise _unverified_installation()
+
+
+def _load_slot_manifest(slot: Path) -> InstallManifest:
+    path = slot / "installation.json"
+    if path.is_symlink() or not path.is_file():
+        raise _unverified_installation()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise _unverified_installation() from error
+    return InstallManifest.from_document(value)
+
+
+def _verify_installed_files(
+    manifest: InstallManifest, *, runtime_slot: Path | None = None
+) -> None:
+    binary = manifest.binary_path
+    if binary.is_symlink() or not binary.is_file():
+        raise _unverified_installation()
+    try:
+        launcher_sha256 = _sha256_file(binary)
+    except OSError as error:
+        raise _unverified_installation() from error
+    if launcher_sha256 != manifest.launcher_sha256:
+        raise _unverified_installation()
+    slot = runtime_slot or _runtime_slot(manifest.runtime_path)
+    executable = slot / _CLI_NAME
+    if executable.is_symlink() or not executable.is_file():
+        raise _unverified_installation()
+    try:
+        runtime_sha256 = _sha256_file(executable)
+    except OSError as error:
+        raise _unverified_installation() from error
+    if runtime_sha256 != manifest.runtime_sha256:
+        raise _unverified_installation()
+    _check_runtime_version(executable, manifest.version)
 
 
 def _default_manifest_path() -> Path:
@@ -441,42 +656,13 @@ def _acquire_installation_lock(lock: Path) -> None:
             os.link(candidate, lock, follow_symlinks=False)
             return
         except FileExistsError:
-            pass
-        if _lock_owner_is_alive(lock):
             raise ValueError(
-                "another standalone installation operation is in progress"
+                "another standalone installation operation is in progress "
+                f"(lock: {lock}). If no installation operation is running, "
+                "remove that exact lock file and retry."
             ) from None
-        recovery = lock.with_name(f".{lock.name}.stale-{os.getpid()}")
-        try:
-            os.replace(lock, recovery)
-        except FileNotFoundError:
-            return _acquire_installation_lock(lock)
-        if recovery.is_symlink() or not recovery.is_file():
-            with suppress(OSError):
-                os.replace(recovery, lock)
-            raise ValueError(
-                "stale installation lock is not a regular file"
-            )
-        recovery.unlink()
-        return _acquire_installation_lock(lock)
     finally:
         candidate.unlink(missing_ok=True)
-
-
-def _lock_owner_is_alive(lock: Path) -> bool:
-    if lock.is_symlink() or not lock.is_file():
-        return True
-    try:
-        owner = int(lock.read_text(encoding="ascii").strip())
-    except (OSError, UnicodeError, ValueError):
-        return True
-    try:
-        os.kill(owner, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _release_installation_lock(lock: Path) -> None:
@@ -578,9 +764,11 @@ def _validate_runtime_directory(path: Path) -> None:
 def _validate_runtime_contents(path: Path) -> None:
     if path.is_symlink() or not path.is_dir():
         raise ValueError("installed standalone runtime is missing or unsafe")
-    executable = path / "harness"
+    executable = path / _CLI_NAME
     if executable.is_symlink() or not executable.is_file():
-        raise ValueError("standalone runtime has no safe harness executable")
+        raise ValueError(
+            f"standalone runtime has no safe {_CLI_NAME} executable"
+        )
 
 
 def _runtime_slot(pointer: Path) -> Path:
@@ -683,7 +871,9 @@ def _atomic_json(path: Path, document: dict[str, Any]) -> None:
 
 
 def _managed_path_change(
-    profile: Path, install_dir: Path
+    profile: Path,
+    install_dir: Path,
+    expected_block_sha256: str | None,
 ) -> tuple[bytes | None, bytes | None]:
     if not profile.exists():
         return None, None
@@ -698,6 +888,15 @@ def _managed_path_change(
         if profile.suffix == ".fish"
         else f"export PATH='{escaped_install_dir}':\"$PATH\""
     )
+    expected_block = (
+        f"{start_marker}\n{expected_path_line}\n{end_marker}\n"
+    ).encode()
+    if (
+        expected_block_sha256 is None
+        or hashlib.sha256(expected_block).hexdigest()
+        != expected_block_sha256
+    ):
+        raise _unverified_installation()
     starts = [
         index
         for index, line in enumerate(lines)
@@ -730,6 +929,8 @@ def _apply_managed_path_change(
     profile: Path,
     expected_before: bytes | None,
     after: bytes | None,
+    *,
+    remove_file: bool = False,
 ) -> None:
     if expected_before is None and after is None:
         if profile.exists() or profile.is_symlink():
@@ -740,6 +941,9 @@ def _apply_managed_path_change(
     if profile.read_bytes() != expected_before:
         raise ValueError(f"shell profile changed after uninstall review: {profile}")
     if expected_before == after:
+        return
+    if remove_file and after == b"":
+        profile.unlink()
         return
     descriptor, temporary_name = tempfile.mkstemp(
         dir=profile.parent, prefix=f".{profile.name}-", suffix=".tmp"
@@ -765,11 +969,16 @@ def _restore_managed_path_change(
     profile: Path,
     before: bytes | None,
     after: bytes | None,
+    *,
+    removed_file: bool = False,
 ) -> None:
     if before is None and after is None:
         return
     if before is None or after is None:
         raise ValueError("managed PATH recovery was not reviewed")
+    if removed_file and not profile.exists() and not profile.is_symlink():
+        _atomic_bytes(profile, before)
+        return
     current = profile.read_bytes()
     if current == after:
         _apply_managed_path_change(profile, after, before)
@@ -779,4 +988,26 @@ def _restore_managed_path_change(
         )
 
 
-__all__ = ["SelfManager", "UninstallPlan", "UninstallResult", "UpdateResult"]
+def _atomic_bytes(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}-", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+__all__ = [
+    "RollbackResult",
+    "SelfManager",
+    "UninstallPlan",
+    "UninstallResult",
+    "UpdateResult",
+]

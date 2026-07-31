@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "adaptive-harness"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local-first governance runtime for software development agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ authors = [{ name = "Adaptive Harness contributors" }]
 dependencies = ["jsonschema>=4.23,<5"]
 
 [project.scripts]
-harness = "adaptive_harness.cli:main"
+adp-harness = "adaptive_harness.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
