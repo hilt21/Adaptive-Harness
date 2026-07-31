@@ -1889,8 +1889,18 @@ def test_config_cli_explain_diff_and_apply(
     reason="requires host sandbox-exec outside the test runner sandbox",
 )
 def test_claude_enforced_capability_path_completes_with_sandboxed_evidence(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    home = tmp_path / "home"
+    launcher = home / ".local/bin/adp-harness"
+    launcher.parent.mkdir(parents=True)
+    current_launcher = shutil.which("adp-harness")
+    assert current_launcher is not None
+    shutil.copy2(current_launcher, launcher)
+    monkeypatch.setenv("HOME", str(home))
+
     root = copy_git_fixture(tmp_path)
     data_root = tmp_path / "enforced-data"
     assert main(
